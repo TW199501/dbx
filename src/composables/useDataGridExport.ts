@@ -7,6 +7,7 @@ import {
   formatSelectionAsJson,
   formatSelectionAsSqlInList,
   formatSelectionAsTsv,
+  type CellSelectionRange,
   type SelectionData,
 } from "@/lib/gridSelection";
 import { useToast } from "@/composables/useToast";
@@ -31,6 +32,7 @@ export interface UseDataGridExportOptions {
   databaseType: ComputedRef<string | undefined>;
   hasCellSelection: ComputedRef<boolean>;
   selectedCells: ComputedRef<SelectionData>;
+  selectedRange: ComputedRef<CellSelectionRange | null>;
   contextCell:
     | Ref<{ rowId: number; rowIndex: number; col: number } | null>
     | ComputedRef<{ rowId: number; rowIndex: number; col: number } | null>;
@@ -50,6 +52,7 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     tableMeta,
     hasCellSelection,
     selectedCells,
+    selectedRange,
     contextCell,
     getRowItem,
     quoteIdent,
@@ -102,14 +105,24 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
   }
 
   function copyRowAsInsert() {
-    if (!contextCell.value) return;
-    const item = getRowItem(contextCell.value.rowId);
-    if (!item) return;
-    const cols = columns.value.map((c) => quoteIdent(c)).join(", ");
-    const vals = item.data.map((v) => escapeVal(v)).join(", ");
     const table = tableMeta.value
       ? (tableMeta.value.schema ? `${quoteIdent(tableMeta.value.schema)}.` : "") + quoteIdent(tableMeta.value.tableName)
       : "table_name";
+    const cols = columns.value.map((c) => quoteIdent(c)).join(", ");
+    const range = selectedRange.value;
+    if (range && range.startRow !== range.endRow) {
+      const items = displayItems.value.slice(range.startRow, range.endRow + 1);
+      const statements = items.map((item) => {
+        const vals = item.data.map((v) => escapeVal(v)).join(", ");
+        return `INSERT INTO ${table} (${cols}) VALUES (${vals});`;
+      });
+      copyText(statements.join("\n"));
+      return;
+    }
+    if (!contextCell.value) return;
+    const item = getRowItem(contextCell.value.rowId);
+    if (!item) return;
+    const vals = item.data.map((v) => escapeVal(v)).join(", ");
     copyText(`INSERT INTO ${table} (${cols}) VALUES (${vals});`);
   }
 

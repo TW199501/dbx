@@ -1402,6 +1402,7 @@ const {
   databaseType: computed(() => props.databaseType),
   hasCellSelection,
   selectedCells,
+  selectedRange,
   contextCell: exportContextCell,
   getRowItem: (rowId: number) => visibleDisplayItems.value.find((item) => item.id === rowId),
   quoteIdent,
