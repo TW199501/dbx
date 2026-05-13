@@ -415,6 +415,7 @@ async function openData() {
       databaseType: config.db_type,
       schema: node.schema,
       tableName: node.label,
+      columns: columns.map((column) => column.name),
       primaryKeys: pks,
       includeRowId: usesSyntheticRowIdKey(config.db_type, pks),
     });
@@ -896,7 +897,20 @@ async function exportData(format: "csv" | "json" | "sql") {
       isSchemaAware(config.db_type) && node.schema
         ? `${quoteIdent(node.schema)}.${quoteIdent(node.label)}`
         : quoteIdent(node.label);
-    const result = await api.executeQuery(node.connectionId, node.database, `SELECT * FROM ${qualifiedName}`);
+    const queryColumns =
+      config.db_type === "neo4j"
+        ? (await api.getColumns(node.connectionId, node.database, node.schema || node.database, node.label)).map(
+            (column) => column.name,
+          )
+        : undefined;
+    const dataSql = buildTableSelectSql({
+      databaseType: config.db_type,
+      schema: node.schema,
+      tableName: node.label,
+      columns: queryColumns,
+      limit: 10000,
+    });
+    const result = await api.executeQuery(node.connectionId, node.database, dataSql);
 
     let content: string;
     let ext: string;
@@ -927,11 +941,20 @@ async function exportDataXlsx() {
 
   try {
     await connectionStore.ensureConnected(node.connectionId);
-    const qualifiedName =
-      isSchemaAware(config.db_type) && node.schema
-        ? `${quoteIdent(node.schema)}.${quoteIdent(node.label)}`
-        : quoteIdent(node.label);
-    const result = await api.executeQuery(node.connectionId, node.database, `SELECT * FROM ${qualifiedName}`);
+    const queryColumns =
+      config.db_type === "neo4j"
+        ? (await api.getColumns(node.connectionId, node.database, node.schema || node.database, node.label)).map(
+            (column) => column.name,
+          )
+        : undefined;
+    const dataSql = buildTableSelectSql({
+      databaseType: config.db_type,
+      schema: node.schema,
+      tableName: node.label,
+      columns: queryColumns,
+      limit: 10000,
+    });
+    const result = await api.executeQuery(node.connectionId, node.database, dataSql);
 
     const { buildXlsxWorkbook } = await import("@/lib/xlsxExport");
     const workbook = buildXlsxWorkbook({

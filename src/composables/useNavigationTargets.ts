@@ -27,6 +27,27 @@ async function openTableTarget(target: NavigationTarget) {
     await connectionStore.ensureConnected(target.connectionId);
     if (!config) throw new Error("Connection config not found");
     const querySchema = target.schema || target.database;
+    if (config.db_type === "neo4j") {
+      const columns = await api.getColumns(target.connectionId, target.database, querySchema, target.tableName);
+      const primaryKeys = editablePrimaryKeys(config.db_type, columns);
+      const sql = buildTableSelectSql({
+        databaseType: config.db_type,
+        schema: target.schema,
+        tableName: target.tableName,
+        columns: columns.map((column) => column.name),
+        primaryKeys,
+        whereInput: target.whereInput,
+      });
+      queryStore.updateSql(tabId, sql);
+      queryStore.setTableMeta(tabId, {
+        schema: target.schema,
+        tableName: target.tableName,
+        columns,
+        primaryKeys,
+      });
+      await queryStore.executeTabSql(tabId, sql);
+      return;
+    }
     const sql = buildTableSelectSql({
       databaseType: config.db_type,
       schema: target.schema,

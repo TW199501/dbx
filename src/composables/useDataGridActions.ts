@@ -37,6 +37,7 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
       databaseType: config?.db_type,
       schema: tab.tableMeta?.schema,
       tableName: tab.tableMeta?.tableName ?? "",
+      columns: tab.tableMeta?.columns.map((column) => column.name),
       primaryKeys,
       fallbackOrderColumns,
       includeRowId: useRowId,
@@ -100,7 +101,11 @@ export function useDataGridActions(activeTab: ComputedRef<QueryTab | undefined>)
     if (tab.mode === "data") {
       if (!tab.tableMeta) return;
       tab.whereInput = whereInput ?? "";
-      const orderBy = direction ? `${quoteIdent(tab, column)} ${direction.toUpperCase()}` : undefined;
+      const config = connectionStore.getConfig(tab.connectionId);
+      const quotedColumn = quoteIdent(tab, column);
+      const orderBy = direction
+        ? `${config?.db_type === "neo4j" ? `n.${quotedColumn}` : quotedColumn} ${direction.toUpperCase()}`
+        : undefined;
       const sql = buildTableSql(tab, { orderBy, whereInput });
       queryStore.updateSql(tab.id, sql);
       await queryStore.executeCurrentTab();

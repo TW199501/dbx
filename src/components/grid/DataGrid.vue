@@ -826,7 +826,7 @@ function currentWhereInput(): string | undefined {
 function currentOrderBy(): string | undefined {
   return (
     orderByInput.value.trim() ||
-    (sortCol.value ? `${quoteIdent(sortCol.value)} ${sortDir.value.toUpperCase()}` : undefined)
+    (sortCol.value ? `${queryColumnRef(sortCol.value)} ${sortDir.value.toUpperCase()}` : undefined)
   );
 }
 
@@ -1313,7 +1313,7 @@ type FilterMode =
 
 function contextFilterCondition(mode: FilterMode): string | null {
   if (!contextColumn.value) return null;
-  const column = quoteIdent(contextColumn.value);
+  const column = queryColumnRef(contextColumn.value);
   const value = contextCellValue.value;
 
   if (mode === "is-null") return `${column} IS NULL`;
@@ -1355,6 +1355,7 @@ async function applyOrderBySearch() {
       databaseType: props.databaseType,
       schema: props.tableMeta.schema,
       tableName: props.tableMeta.tableName,
+      columns: props.tableMeta.columns.map((column) => column.name),
       primaryKeys: props.tableMeta.primaryKeys,
       orderBy: orderByClause,
       limit: pageSize.value,
@@ -1379,10 +1380,11 @@ async function applyWhereFilter() {
       databaseType: props.databaseType,
       schema: props.tableMeta.schema,
       tableName: props.tableMeta.tableName,
+      columns: props.tableMeta.columns.map((column) => column.name),
       primaryKeys: props.tableMeta.primaryKeys,
       orderBy:
         orderByInput.value.trim() ||
-        (sortCol.value ? `${quoteIdent(sortCol.value)} ${sortDir.value.toUpperCase()}` : undefined),
+        (sortCol.value ? `${queryColumnRef(sortCol.value)} ${sortDir.value.toUpperCase()}` : undefined),
       limit: pageSize.value,
       whereInput: whereFilterInput.value.trim() || undefined,
       includeRowId: tableUsesSyntheticRowId.value,
@@ -1406,6 +1408,11 @@ function formatCell(value: CellValue): string {
 
 function quoteIdent(name: string): string {
   return quoteTableIdentifier(props.databaseType, name);
+}
+
+function queryColumnRef(name: string): string {
+  const quoted = quoteIdent(name);
+  return props.databaseType === "neo4j" ? `n.${quoted}` : quoted;
 }
 
 function escapeVal(value: CellValue): string {

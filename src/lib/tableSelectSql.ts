@@ -1,12 +1,13 @@
 import type { DatabaseType } from "../types/database.ts";
 import { isSchemaAware, usesFetchFirst } from "./databaseCapabilities.ts";
-import { DBX_ROWID_COLUMN } from "./tableEditing.ts";
+import { DBX_NEO4J_ELEMENT_ID_COLUMN, DBX_ROWID_COLUMN } from "./tableEditing.ts";
 
 export interface BuildTableSelectSqlOptions {
   databaseType?: DatabaseType;
   schema?: string;
   tableName: string;
   primaryKeys?: string[];
+  columns?: string[];
   fallbackOrderColumns?: string[];
   orderBy?: string;
   limit?: number;
@@ -17,8 +18,13 @@ export interface BuildTableSelectSqlOptions {
 
 export function quoteTableIdentifier(databaseType: DatabaseType | undefined, name: string): string {
   if (databaseType === "mysql") return `\`${name.replace(/`/g, "``")}\``;
+  if (databaseType === "neo4j") return quoteCypherIdentifier(name);
   if (databaseType === "sqlserver") return `[${name.replace(/\]/g, "]]")}]`;
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+function quoteCypherIdentifier(name: string): string {
+  return `\`${name.replace(/`/g, "``")}\``;
 }
 
 function isOracleRowId(databaseType: DatabaseType | undefined, name: string): boolean {
@@ -48,6 +54,8 @@ export function normalizeWhereInput(whereInput?: string): string {
 export function buildTableSelectSql(options: BuildTableSelectSqlOptions): string {
   const databaseType = options.databaseType;
   const limit = options.limit ?? 100;
+  if (databaseType === "neo4j") return buildNeo4jTableSelectSql(options, limit);
+
   const table = qualifiedTableName(options);
   const predicate = normalizeWhereInput(options.whereInput);
   const where = predicate ? ` WHERE (${predicate})` : "";
@@ -76,4 +84,23 @@ export function buildTableSelectSql(options: BuildTableSelectSqlOptions): string
 
   const offset = options.offset ? ` OFFSET ${options.offset}` : "";
   return `SELECT * FROM ${table}${where}${order} LIMIT ${limit}${offset};`;
+}
+
+function buildNeo4jTableSelectSql(options: BuildTableSelectSqlOptions, limit: number): string {
+  const label = quoteCypherIdentifier(options.tableName);
+  const predicate = normalizeWhereInput(options.whereInput);
+  const where = predicate ? ` WHERE ${predicate}` : "";
+  const returnedColumns = options.columns?.length
+    ? options.columns
+        .map((column) => `n.${quoteCypherIdentifier(column)} AS ${quoteCypherIdentifier(column)}`)
+        .join(", ")
+    : "n";
+  const returns = `elementId(n) AS ${quoteCypherIdentifier(DBX_NEO4J_ELEMENT_ID_COLUMN)}, ${returnedColumns}`;
+  const defaultOrderBy = options.primaryKeys?.length
+    ? options.primaryKeys.map((pk) => `n.${quoteCypherIdentifier(pk)} ASC`).join(", ")
+    : undefined;
+  const orderBy = options.orderBy ?? defaultOrderBy;
+  const order = orderBy ? ` ORDER BY ${orderBy}` : "";
+  const skip = options.offset ? ` SKIP ${options.offset}` : "";
+  return `MATCH (n:${label})${where} RETURN ${returns}${order}${skip} LIMIT ${limit};`;
 }

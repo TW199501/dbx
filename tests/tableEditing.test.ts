@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
+  DBX_NEO4J_ELEMENT_ID_COLUMN,
   DBX_ROWID_COLUMN,
   editablePrimaryKeys,
   isHiddenGridColumn,
@@ -31,15 +32,21 @@ test("does not synthesize ROWID for non-Oracle keyless tables", () => {
   assert.deepEqual(editablePrimaryKeys("mysql", [column("ID"), column("CITY")]), []);
 });
 
+test("uses elementId as Neo4j editable key when labels have no primary key", () => {
+  assert.deepEqual(editablePrimaryKeys("neo4j", [column("name"), column("role")]), [DBX_NEO4J_ELEMENT_ID_COLUMN]);
+});
+
 test("detects the synthetic Oracle ROWID key case", () => {
   assert.equal(usesSyntheticRowIdKey("oracle", [DBX_ROWID_COLUMN]), true);
   assert.equal(usesSyntheticRowIdKey("oracle", [DBX_ROWID_COLUMN.toLowerCase()]), true);
   assert.equal(usesSyntheticRowIdKey("postgres", [DBX_ROWID_COLUMN]), false);
   assert.equal(usesSyntheticRowIdKey("oracle", ["ID"]), false);
+  assert.equal(usesSyntheticRowIdKey("neo4j", [DBX_NEO4J_ELEMENT_ID_COLUMN]), true);
 });
 
 test("hides only the synthetic Oracle ROWID grid column", () => {
   assert.equal(isHiddenGridColumn("oracle", DBX_ROWID_COLUMN, [DBX_ROWID_COLUMN]), true);
   assert.equal(isHiddenGridColumn("oracle", "ROWID", [DBX_ROWID_COLUMN]), false);
   assert.equal(isHiddenGridColumn("mysql", DBX_ROWID_COLUMN, [DBX_ROWID_COLUMN]), false);
+  assert.equal(isHiddenGridColumn("neo4j", DBX_NEO4J_ELEMENT_ID_COLUMN, [DBX_NEO4J_ELEMENT_ID_COLUMN]), true);
 });

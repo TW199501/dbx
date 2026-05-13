@@ -85,3 +85,30 @@ test("builds Oracle table data queries with ROWID for keyless editing", () => {
     `SELECT ROWIDTOCHAR(t.ROWID) AS "__DBX_ROWID", t.* FROM "DBXTEST"."DBX_LOAD_TABLE_006" t ORDER BY t.ROWID ASC FETCH FIRST 100 ROWS ONLY`,
   );
 });
+
+test("builds Neo4j table data queries as Cypher label matches", () => {
+  const sql = buildTableSelectSql({
+    databaseType: "neo4j",
+    tableName: "Employee",
+    primaryKeys: ["id"],
+    limit: 100,
+    offset: 200,
+  });
+
+  assert.equal(sql, "MATCH (n:`Employee`) RETURN elementId(n) AS `__DBX_ELEMENT_ID`, n ORDER BY n.`id` ASC SKIP 200 LIMIT 100;");
+});
+
+test("expands Neo4j table data queries into node property columns", () => {
+  const sql = buildTableSelectSql({
+    databaseType: "neo4j",
+    tableName: "Employee",
+    columns: ["id", "first name", "role"],
+    primaryKeys: ["id"],
+    limit: 100,
+  });
+
+  assert.equal(
+    sql,
+    "MATCH (n:`Employee`) RETURN elementId(n) AS `__DBX_ELEMENT_ID`, n.`id` AS `id`, n.`first name` AS `first name`, n.`role` AS `role` ORDER BY n.`id` ASC LIMIT 100;",
+  );
+});

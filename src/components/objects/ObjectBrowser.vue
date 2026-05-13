@@ -31,7 +31,7 @@ import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
 import * as api from "@/lib/api";
 import type { ConnectionConfig, ObjectInfo, ObjectSourceKind } from "@/types/database";
 import { isSchemaAware } from "@/lib/databaseCapabilities";
-import { qualifiedTableName } from "@/lib/tableSelectSql";
+import { buildTableSelectSql, qualifiedTableName } from "@/lib/tableSelectSql";
 import { useToast } from "@/composables/useToast";
 import { buildExecutableObjectSourceSql, objectSourceSaveExecutionMode } from "@/lib/objectSourceEditor";
 import { useQueryStore } from "@/stores/queryStore";
@@ -215,7 +215,15 @@ async function openSource(row: ObjectRow) {
 
 function openNewQuery(row: ObjectRow) {
   const tabId = queryStore.createTab(props.connection.id, props.database, row.name);
-  queryStore.updateSql(tabId, `SELECT * FROM ${qualifiedName(row)} LIMIT 100;`);
+  queryStore.updateSql(
+    tabId,
+    buildTableSelectSql({
+      databaseType: props.connection.db_type,
+      schema: row.schema || selectedSchema.value,
+      tableName: row.name,
+      limit: 100,
+    }),
+  );
 }
 
 function qualifiedName(row: ObjectRow): string {

@@ -1,10 +1,12 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
+  buildDataGridRollbackStatements,
   buildDataGridSaveStatements,
   dataGridSaveExecutionSchema,
   validateDataGridSave,
 } from "../src/lib/dataGridSql.ts";
+import { DBX_NEO4J_ELEMENT_ID_COLUMN } from "../src/lib/tableEditing.ts";
 
 test("builds SQL Server grid save statements with schema and bracket quoting", () => {
   const statements = buildDataGridSaveStatements({
@@ -56,6 +58,55 @@ test("uses Oracle ROWID as a synthetic key without writing it as a normal column
     `DELETE FROM "DBXTEST"."DBX_LOAD_TABLE_006" WHERE ROWIDTOCHAR(ROWID) = 'AAATiBAABAAABrXAAA';`,
     `INSERT INTO "DBXTEST"."DBX_LOAD_TABLE_006" ("ID", "CITY", "NOTE") VALUES (2, '广州', 'new');`,
   ]);
+});
+
+test("builds Neo4j grid save statements with elementId keys", () => {
+  const statements = buildDataGridSaveStatements({
+    databaseType: "neo4j",
+    tableMeta: {
+      tableName: "Employee",
+      primaryKeys: [DBX_NEO4J_ELEMENT_ID_COLUMN],
+    },
+    columns: [DBX_NEO4J_ELEMENT_ID_COLUMN, "name", "active"],
+    rows: [["4:abc:7", "Ada", true]],
+    dirtyRows: [[0, [[1, "Grace"]]]],
+    deletedRows: [0],
+    newRows: [[null, "Linus", false]],
+  });
+
+  assert.deepEqual(statements, [
+    "MATCH (n:`Employee`) WHERE elementId(n) = '4:abc:7' SET n.`name` = 'Grace';",
+    "MATCH (n:`Employee`) WHERE elementId(n) = '4:abc:7' DETACH DELETE n;",
+    "CREATE (n:`Employee` {`name`: 'Linus', `active`: FALSE});",
+  ]);
+});
+
+test("builds best-effort Neo4j rollback statements", () => {
+  const statements = buildDataGridRollbackStatements({
+    databaseType: "neo4j",
+    tableMeta: {
+      tableName: "Employee",
+      primaryKeys: [DBX_NEO4J_ELEMENT_ID_COLUMN],
+    },
+    columns: [DBX_NEO4J_ELEMENT_ID_COLUMN, "name", "active"],
+    rows: [["4:abc:7", "Ada", true]],
+    dirtyRows: [[0, [[1, "Grace"]]]],
+    deletedRows: [0],
+    newRows: [[null, "Linus", false]],
+  });
+
+  assert.deepEqual(statements, [
+    "MATCH (n:`Employee`) WHERE n.`name` = 'Linus' AND n.`active` = FALSE DETACH DELETE n;",
+    "CREATE (n:`Employee` {`name`: 'Ada', `active`: TRUE});",
+    "MATCH (n:`Employee`) WHERE elementId(n) = '4:abc:7' SET n.`name` = 'Ada';",
+  ]);
+});
+
+test("skips schema setup for Neo4j data grid saves", () => {
+  assert.equal(
+    dataGridSaveExecutionSchema("neo4j", { schema: "ignored", tableName: "Employee", primaryKeys: [] }),
+    undefined,
+  );
 });
 
 test("skips current_schema setup for Oracle data grid saves", () => {
