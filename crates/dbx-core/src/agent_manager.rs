@@ -123,11 +123,17 @@ impl AgentManager {
 
     pub fn jre_java_path(&self, jre_key: &str) -> PathBuf {
         let dir = self.jre_dir(jre_key);
-        if cfg!(windows) {
-            dir.join("bin").join("java.exe")
-        } else {
-            dir.join("bin").join("java")
+        let java_name = if cfg!(windows) { "java.exe" } else { "java" };
+        let flat = dir.join("bin").join(java_name);
+        if flat.exists() {
+            return flat;
         }
+        // macOS Adoptium JRE 8 uses Contents/Home/ layout
+        let macos = dir.join("Contents").join("Home").join("bin").join(java_name);
+        if macos.exists() {
+            return macos;
+        }
+        flat
     }
 
     pub fn driver_jar_path(&self, db_type: &str) -> PathBuf {
@@ -159,13 +165,16 @@ impl AgentManager {
         self.driver_jar_path(db_type).exists()
     }
 
-    pub fn db_type_to_agent_key(db_type: &DatabaseType) -> Option<&'static str> {
+    pub fn db_type_to_agent_key(db_type: &DatabaseType, driver_profile: Option<&str>) -> Option<&'static str> {
         match db_type {
             DatabaseType::Dameng => Some("dameng"),
             DatabaseType::Kingbase => Some("kingbase"),
             DatabaseType::Vastbase => Some("vastbase"),
             DatabaseType::Goldendb => Some("goldendb"),
-            DatabaseType::Oracle => Some("oracle"),
+            DatabaseType::Oracle => match driver_profile {
+                Some("oracle-10g") => Some("oracle-10g"),
+                _ => Some("oracle"),
+            },
             DatabaseType::H2 => Some("h2"),
             DatabaseType::Snowflake => Some("snowflake"),
             DatabaseType::Trino => Some("trino"),
@@ -183,11 +192,15 @@ impl AgentManager {
     }
 
     pub fn is_agent_type(db_type: &DatabaseType) -> bool {
-        Self::db_type_to_agent_key(db_type).is_some()
+        Self::db_type_to_agent_key(db_type, None).is_some()
     }
 
-    pub async fn spawn(&self, db_type: &DatabaseType) -> Result<AgentDriverClient, String> {
-        let key = Self::db_type_to_agent_key(db_type)
+    pub async fn spawn(
+        &self,
+        db_type: &DatabaseType,
+        driver_profile: Option<&str>,
+    ) -> Result<AgentDriverClient, String> {
+        let key = Self::db_type_to_agent_key(db_type, driver_profile)
             .ok_or_else(|| format!("{:?} is not an agent-driven database type", db_type))?;
 
         let state = self.load_state();
@@ -208,10 +221,11 @@ impl AgentManager {
     pub async fn call_daemon<T: serde::de::DeserializeOwned + Send + 'static>(
         &self,
         db_type: &DatabaseType,
+        driver_profile: Option<&str>,
         method: &str,
         params: serde_json::Value,
     ) -> Result<T, String> {
-        let key = Self::db_type_to_agent_key(db_type)
+        let key = Self::db_type_to_agent_key(db_type, driver_profile)
             .ok_or_else(|| format!("{:?} is not an agent-driven database type", db_type))?
             .to_string();
 

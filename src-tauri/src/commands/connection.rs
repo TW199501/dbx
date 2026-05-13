@@ -127,6 +127,7 @@ pub async fn test_connection(state: State<'_, Arc<AppState>>, config: Connection
                     .agent_manager
                     .call_daemon::<serde_json::Value>(
                         &config.db_type,
+                        config.driver_profile.as_deref(),
                         "test_connection",
                         serde_json::json!({
                             "host": host,
@@ -238,7 +239,7 @@ pub async fn connect_db(state: State<'_, Arc<AppState>>, config: ConnectionConfi
         | DatabaseType::Kylin
         | DatabaseType::Sundb
         | DatabaseType::Gaussdb => {
-            let mut client = state.agent_manager.spawn(&db_config.db_type).await?;
+            let mut client = state.agent_manager.spawn(&db_config.db_type, db_config.driver_profile.as_deref()).await?;
             client
                 .call::<serde_json::Value>(
                     "connect",

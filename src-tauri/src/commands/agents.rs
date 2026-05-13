@@ -17,6 +17,7 @@ const AGENT_TYPES: &[(&str, &str)] = &[
     ("vastbase", "Vastbase"),
     ("goldendb", "GoldenDB"),
     ("oracle", "Oracle"),
+    ("oracle-10g", "Oracle 10g"),
     ("h2", "H2"),
     ("snowflake", "Snowflake"),
     ("trino", "Trino (Presto)"),

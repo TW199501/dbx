@@ -16,6 +16,7 @@ const isDark = computed(() => resolveAppThemeAppearance(themeMode.value, systemP
 
 let mediaQuery: MediaQueryList | null = null;
 let isListeningForSystemTheme = false;
+let cachedTauriWindow: typeof import("@tauri-apps/api/window") | null = null;
 
 function readSystemPrefersDark() {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
@@ -35,15 +36,34 @@ function setupSystemThemeListener() {
 }
 
 function applyTheme() {
-  if (typeof document !== "undefined") {
-    document.documentElement.classList.toggle("dark", isDark.value);
-  }
+  if (typeof document === "undefined") return;
+
+  const doc = document.documentElement;
+  const dark = isDark.value;
+
+  doc.classList.add("disable-transitions");
+  doc.classList.toggle("dark", dark);
+  doc.style.colorScheme = dark ? "dark" : "light";
+
+  // force reflow so the class toggle takes effect before re-enabling transitions
+  doc.offsetHeight; // eslint-disable-line @typescript-eslint/no-unused-expressions
+  requestAnimationFrame(() => doc.classList.remove("disable-transitions"));
+
   if (!isTauriRuntime()) return;
-  import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-    getCurrentWindow()
+  if (cachedTauriWindow) {
+    cachedTauriWindow
+      .getCurrentWindow()
       .setTheme(getTauriThemeForMode(themeMode.value))
       .catch(() => {});
-  });
+  } else {
+    import("@tauri-apps/api/window").then((mod) => {
+      cachedTauriWindow = mod;
+      mod
+        .getCurrentWindow()
+        .setTheme(getTauriThemeForMode(themeMode.value))
+        .catch(() => {});
+    });
+  }
 }
 
 function setThemeMode(mode: AppThemeMode) {

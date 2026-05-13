@@ -231,7 +231,8 @@ impl AppState {
             | DatabaseType::Kylin
             | DatabaseType::Sundb
             | DatabaseType::Gaussdb => {
-                let mut client = self.agent_manager.spawn(&db_config.db_type).await?;
+                let mut client =
+                    self.agent_manager.spawn(&db_config.db_type, db_config.driver_profile.as_deref()).await?;
                 client
                     .call::<serde_json::Value>(
                         "connect",
