@@ -38,6 +38,27 @@ test("builds SQL Server grid save statements with schema and bracket quoting", (
   ]);
 });
 
+test("builds Hive grid save statements with backtick identifiers", () => {
+  const statements = buildDataGridSaveStatements({
+    databaseType: "hive",
+    tableMeta: {
+      tableName: "department states",
+      primaryKeys: ["dept id"],
+    },
+    columns: ["dept id", "display name"],
+    rows: [[10, "Sales"]],
+    dirtyRows: [[0, [[1, "Marketing"]]]],
+    deletedRows: [0],
+    newRows: [[20, "Engineering"]],
+  });
+
+  assert.deepEqual(statements, [
+    "UPDATE `department states` SET `display name` = 'Marketing' WHERE `dept id` = 10;",
+    "DELETE FROM `department states` WHERE `dept id` = 10;",
+    "INSERT INTO `department states` (`dept id`, `display name`) VALUES (20, 'Engineering');",
+  ]);
+});
+
 test("uses Oracle ROWID as a synthetic key without writing it as a normal column", () => {
   const statements = buildDataGridSaveStatements({
     databaseType: "oracle",

@@ -28,6 +28,28 @@ test("builds a schema-qualified PostgreSQL table WHERE query", () => {
   assert.equal(sql, 'SELECT * FROM "public"."orders" WHERE (amount > 10) LIMIT 50 OFFSET 100;');
 });
 
+test("builds Hive table data queries with backtick identifiers", () => {
+  const sql = buildTableSelectSql({
+    databaseType: "hive",
+    tableName: "departments",
+    primaryKeys: ["dept id"],
+    limit: 100,
+  });
+
+  assert.equal(sql, "SELECT * FROM `departments` ORDER BY `dept id` ASC LIMIT 100;");
+});
+
+test("expands Hive table data queries into aliased table columns", () => {
+  const sql = buildTableSelectSql({
+    databaseType: "hive",
+    tableName: "departments",
+    columns: ["id", "name"],
+    limit: 100,
+  });
+
+  assert.equal(sql, "SELECT `id` AS `id`, `name` AS `name` FROM `departments` LIMIT 100;");
+});
+
 test("builds SQL Server first page query with schema-aware brackets", () => {
   const sql = buildTableSelectSql({
     databaseType: "sqlserver",

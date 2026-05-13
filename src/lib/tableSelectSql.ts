@@ -17,7 +17,7 @@ export interface BuildTableSelectSqlOptions {
 }
 
 export function quoteTableIdentifier(databaseType: DatabaseType | undefined, name: string): string {
-  if (databaseType === "mysql") return `\`${name.replace(/`/g, "``")}\``;
+  if (databaseType === "mysql" || databaseType === "hive") return `\`${name.replace(/`/g, "``")}\``;
   if (databaseType === "neo4j") return quoteCypherIdentifier(name);
   if (databaseType === "sqlserver") return `[${name.replace(/\]/g, "]]")}]`;
   return `"${name.replace(/"/g, '""')}"`;
@@ -69,7 +69,9 @@ export function buildTableSelectSql(options: BuildTableSelectSqlOptions): string
   const order = orderBy ? ` ORDER BY ${orderBy}` : "";
 
   const selectColumns =
-    options.includeRowId && databaseType === "oracle" ? `ROWIDTOCHAR(t.ROWID) AS "${DBX_ROWID_COLUMN}", t.*` : "*";
+    options.includeRowId && databaseType === "oracle"
+      ? `ROWIDTOCHAR(t.ROWID) AS "${DBX_ROWID_COLUMN}", t.*`
+      : buildSelectColumns(databaseType, options.columns);
   const tableAlias = options.includeRowId && usesFetchFirst(databaseType) ? `${table} t` : table;
 
   if (usesFetchFirst(databaseType)) {
@@ -83,7 +85,17 @@ export function buildTableSelectSql(options: BuildTableSelectSqlOptions): string
   }
 
   const offset = options.offset ? ` OFFSET ${options.offset}` : "";
-  return `SELECT * FROM ${table}${where}${order} LIMIT ${limit}${offset};`;
+  return `SELECT ${selectColumns} FROM ${table}${where}${order} LIMIT ${limit}${offset};`;
+}
+
+function buildSelectColumns(databaseType: DatabaseType | undefined, columns?: string[]): string {
+  if (databaseType !== "hive" || !columns?.length) return "*";
+  return columns
+    .map((column) => {
+      const ident = quoteTableIdentifier(databaseType, column);
+      return `${ident} AS ${ident}`;
+    })
+    .join(", ");
 }
 
 function buildNeo4jTableSelectSql(options: BuildTableSelectSqlOptions, limit: number): string {
