@@ -78,6 +78,7 @@ import { formatGridSqlLiteral } from "@/lib/dataGridSql";
 import { matchesRowStatusFilter, type RowStatus, type RowStatusFilter } from "@/lib/gridRowStatus";
 import { displayCellValue, type CellValue } from "@/lib/cellValue";
 import { isCancelSearchShortcut, isFocusSearchShortcut } from "@/lib/keyboardShortcuts";
+import { dataGridHeaderContentWidth, scrollbarGutterWidth } from "@/lib/dataGridScrollGutter";
 
 import { useToast } from "@/composables/useToast";
 import { useDataGridExport } from "@/composables/useDataGridExport";
@@ -778,6 +779,7 @@ const isApplyingWhere = ref(false);
 const rowStatusFilter = ref<RowStatusFilter>("all");
 const gridRef = ref<HTMLDivElement>();
 const headerRef = ref<HTMLDivElement>();
+const gridScrollbarGutter = ref(0);
 const visibleColumnIndexes = computed(() =>
   props.result.columns
     .map((column, index) => ({ column, index }))
@@ -799,7 +801,16 @@ const { initColumnWidths, onResizeStart, autoFitColumn, columnVars, getIsResizin
   rows: visibleRows,
   gridRef,
 });
+const gridStyle = computed(() => ({
+  ...columnVars.value,
+  "--header-total-w": dataGridHeaderContentWidth("var(--total-w)", gridScrollbarGutter.value),
+  "--grid-scrollbar-gutter": `${gridScrollbarGutter.value}px`,
+}));
+function updateGridScrollbarGutter(element: HTMLElement) {
+  gridScrollbarGutter.value = scrollbarGutterWidth(element);
+}
 function syncHeaderScroll(e: Event) {
+  updateGridScrollbarGutter(e.target as HTMLElement);
   if (headerRef.value) {
     headerRef.value.scrollLeft = (e.target as HTMLElement).scrollLeft;
   }
@@ -1094,6 +1105,16 @@ const displayItems = computed<RowItem[]>(() => {
   });
   return items.filter((item) => matchesRowStatusFilter(item.status, rowStatusFilter.value));
 });
+
+watch(
+  () => displayItems.value.length,
+  () => {
+    nextTick(() => {
+      const scrollerEl = gridRef.value?.querySelector<HTMLElement>(".data-grid-scroller");
+      if (scrollerEl) updateGridScrollbarGutter(scrollerEl);
+    });
+  },
+);
 
 interface SearchMatch {
   displayRow: number;
@@ -1938,7 +1959,7 @@ defineExpose({
   <div
     ref="gridRef"
     class="h-full flex flex-col overflow-hidden outline-none"
-    :style="columnVars"
+    :style="gridStyle"
     tabindex="0"
     @keydown="onGridKeydown"
   >
@@ -2217,7 +2238,7 @@ defineExpose({
                 ref="headerRef"
                 class="shrink-0 bg-[rgb(239_239_239)] dark:bg-muted/60 z-10 border-y border-border overflow-hidden"
               >
-                <div class="flex text-xs font-semibold text-foreground" :style="{ width: 'var(--total-w)' }">
+                <div class="flex text-xs font-semibold text-foreground" :style="{ width: 'var(--header-total-w)' }">
                   <div
                     class="shrink-0 px-2 py-1.5 border-r border-border text-center text-muted-foreground select-none"
                     :style="{ width: 'var(--row-num-w)' }"
@@ -2423,6 +2444,11 @@ defineExpose({
                       </template>
                     </TooltipContent>
                   </Tooltip>
+                  <div
+                    v-if="gridScrollbarGutter > 0"
+                    class="shrink-0 border-l border-border"
+                    :style="{ width: 'var(--grid-scrollbar-gutter)' }"
+                  />
                 </div>
               </div>
 
