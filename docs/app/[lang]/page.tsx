@@ -346,11 +346,7 @@ const testimonials = {
 
 const i18nText = {
   en: {
-    navDocs: 'Docs',
-    navChangelog: 'Changelog',
-    navCommunity: 'Community',
-    lang: '中文',
-    heroTitle: 'A focused database client for daily work',
+    heroTitle: '15 MB to manage 35+ databases!',
     heroSubtitle:
       'DBX brings connections, SQL editing, data grids, schema tools, AI assistance, and self-hosted access into one lightweight product.',
     download: 'Download DBX',
@@ -372,11 +368,7 @@ const i18nText = {
     docker: 'Docker setup',
   },
   cn: {
-    navDocs: '文档',
-    navChangelog: '更新日志',
-    navCommunity: '社区',
-    lang: 'English',
-    heroTitle: '专注日常工作的数据库客户端',
+    heroTitle: '15MB，管理35+种数据库！',
     heroSubtitle: 'DBX 将连接管理、SQL 编辑、数据表格、结构工具、AI 助手和自托管访问放进一个轻量产品里。',
     download: '下载 DBX',
     downloadName: '下载 DBX',
@@ -416,38 +408,17 @@ export default async function LandingPage({
   return (
     <main className="landing">
       {/* Nav */}
-      <LandingNav>
-        <div className="flex items-center justify-between max-w-[1180px] h-16 mx-auto px-7 max-[760px]:min-h-[58px] max-[760px]:h-auto max-[760px]:px-[18px] max-[760px]:py-2.5">
-          <Link href={`/${l}`} className="flex items-center gap-2.5 text-landing-ink text-lg font-extrabold">
-            <img src="/logo.png" alt="DBX" width={28} height={28} className="rounded-[7px]" />
-            <span>DBX</span>
-          </Link>
-          <div className="flex items-center gap-1">
-            <Link href={`/${l}/docs/what-is-dbx`} target="_blank" className="landing-nav-link rounded-[7px] px-[11px] py-2 text-landing-muted text-[13px] font-medium max-[760px]:hidden">
-              {t.navDocs}
-            </Link>
-            <Link href={`/${l}/docs/changelog`} target="_blank" className="landing-nav-link rounded-[7px] px-[11px] py-2 text-landing-muted text-[13px] font-medium max-[760px]:hidden">
-              {t.navChangelog}
-            </Link>
-            <Link href="https://github.com/t8y2/dbx" target="_blank" className="landing-nav-link rounded-[7px] px-[11px] py-2 text-landing-muted text-[13px] font-medium max-[760px]:hidden">
-              GitHub
-            </Link>
-            <Link href={l === 'cn' ? '/en' : '/cn'} className="landing-nav-link rounded-[7px] px-[11px] py-2 text-landing-muted text-[13px] font-medium ml-1.5 border border-landing-line">
-              {t.lang}
-            </Link>
-          </div>
-        </div>
-      </LandingNav>
+      <LandingNav lang={l} active="home" />
 
       {/* Hero */}
       <section className="landing-hero">
         <Spotlight />
         <div className="relative z-[1] max-w-[1180px] mx-auto px-7 max-[1040px]:max-w-[920px] max-[760px]:px-[18px]">
           <div className="landing-hero-copy relative z-[6] grid justify-items-center max-w-[900px] mx-auto text-center max-[1040px]:max-w-[760px]">
-            <h1 className="m-0 text-[clamp(36px,4.2vw,56px)] font-[820] leading-[1.06] text-landing-ink whitespace-nowrap max-[760px]:text-[clamp(26px,7vw,38px)]">
+            <h1 className="min-w-0 m-0 text-[clamp(36px,4.2vw,56px)] font-[820] leading-[1.06] text-landing-ink whitespace-nowrap max-[760px]:text-[clamp(26px,7vw,38px)]">
               {t.heroTitle}
             </h1>
-            <p className="landing-hero-subtitle mt-5 mx-auto text-[17px] font-[460] leading-[1.8] whitespace-nowrap max-[760px]:text-[15px] max-[760px]:leading-[1.68] max-[760px]:whitespace-normal max-[760px]:max-w-[320px]">
+            <p className="landing-hero-subtitle min-w-0 mt-5 mx-auto text-[17px] font-[460] leading-[1.8] whitespace-nowrap max-[760px]:text-[15px] max-[760px]:leading-[1.68] max-[760px]:whitespace-normal max-[760px]:max-w-[320px]">
               {t.heroSubtitle}
             </p>
             <div className="w-full max-w-[520px] mt-10">
@@ -567,7 +538,7 @@ export default async function LandingPage({
             </li>
           ))}
         </ul>
-        <Link href={`/${l}/docs/changelog`} className="landing-inline-link flex shrink-0 items-center gap-[7px] text-sm font-[650] max-[760px]:mt-4" target="_blank">
+        <Link href={`/${l}/changelog`} className="landing-inline-link flex shrink-0 items-center gap-[7px] text-sm font-[650] max-[760px]:mt-4">
           {latest.link}
           <ArrowRight size={15} />
         </Link>

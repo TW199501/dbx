@@ -297,8 +297,20 @@ a {
   --landing-max: 1180px;
   min-height: 100vh;
   color: var(--color-landing-ink);
-  background: #10151d;
+  background: #0b1120;
   overflow: hidden;
+  position: relative;
+}
+
+.landing::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.03;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
 }
 
 .landing a {
@@ -370,7 +382,7 @@ a {
 
 .landing-nav.is-scrolled {
   border-bottom-color: var(--color-landing-line);
-  background: color-mix(in srgb, #0c1120 62%, transparent);
+  background: color-mix(in srgb, #0c1120 44%, transparent);
 }
 
 .landing-nav.is-scrolled::before {
@@ -405,10 +417,10 @@ a {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse at 50% 34%, rgba(44, 88, 174, 0.42), transparent 46%),
+    radial-gradient(ellipse at 50% 34%, rgba(44, 88, 174, 0.48), transparent 52%),
     radial-gradient(ellipse at 18% 16%, rgba(82, 213, 255, 0.13), transparent 34%),
     radial-gradient(ellipse at 76% 22%, rgba(68, 209, 157, 0.1), transparent 30%),
-    linear-gradient(180deg, #10151d 0%, #0c1528 48%, #10151d 82%, #10151d 100%);
+    linear-gradient(180deg, #0b1120 0%, #0c1528 48%, #0b1120 82%, #0b1120 100%);
   z-index: -3;
 }
 
