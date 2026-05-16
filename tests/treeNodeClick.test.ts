@@ -53,6 +53,16 @@ test("database and schema rows open object browser only on double click", () => 
   assert.equal(treeNodeRowAction("schema", true, "double"), "none");
 });
 
+test("double click navigation mode opens object browser for database and schema rows", () => {
+  assert.equal(treeNodeRowDoubleClickAction("database", true, "double", false), "open-object-browser");
+  assert.equal(treeNodeRowDoubleClickAction("schema", true, "double", false), "open-object-browser");
+});
+
+test("double click navigation mode opens object browser and expands expandable database and schema rows", () => {
+  assert.equal(treeNodeRowDoubleClickAction("database", true, "double", true), "open-object-browser-and-expand");
+  assert.equal(treeNodeRowDoubleClickAction("schema", true, "double", true), "open-object-browser-and-expand");
+});
+
 test("double click does not open object browser for non-browsable rows", () => {
   assert.equal(treeNodeRowDoubleClickAction("database", false), "none");
   assert.equal(treeNodeRowDoubleClickAction("table", true), "none");

@@ -373,6 +373,9 @@ function onDoubleClick() {
   );
   if (action === "open-object-browser") {
     void openObjectBrowser();
+  } else if (action === "open-object-browser-and-expand") {
+    void openObjectBrowser();
+    if (!props.node.isExpanded) void toggle();
   } else if (action === "open-data") {
     openData();
   } else if (action === "open-source") {

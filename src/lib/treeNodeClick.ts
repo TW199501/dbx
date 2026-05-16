@@ -5,6 +5,7 @@ export type TreeNodeRowAction = "open-data" | "toggle" | "none";
 export type TreeNodeRowDoubleClickAction =
   | "open-data"
   | "open-object-browser"
+  | "open-object-browser-and-expand"
   | "open-source"
   | "open-saved-sql"
   | "toggle"
@@ -40,6 +41,8 @@ export function treeNodeRowDoubleClickAction(
     if (sourceNodeTypes.has(type)) return "open-source";
     if (type === "saved-sql-file") return "open-saved-sql";
     if (toggleLeafNodeTypes.has(type)) return "toggle";
+    if (canOpenObjectBrowser && objectBrowserNodeTypes.has(type) && canExpand) return "open-object-browser-and-expand";
+    if (canOpenObjectBrowser && objectBrowserNodeTypes.has(type)) return "open-object-browser";
     if (canExpand) return "toggle";
   }
   if (canOpenObjectBrowser && objectBrowserNodeTypes.has(type)) return "open-object-browser";
