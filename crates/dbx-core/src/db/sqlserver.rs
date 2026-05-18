@@ -1,6 +1,7 @@
+use futures::TryStreamExt;
 use rust_decimal::Decimal;
 use std::time::Instant;
-use tiberius::{AuthMethod, Client, ColumnData, Config, FromSql};
+use tiberius::{AuthMethod, Client, ColumnData, Config, FromSql, QueryItem, QueryStream};
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
@@ -57,6 +58,99 @@ async fn try_connect(
 
 fn row_to_json(row: &tiberius::Row) -> Vec<serde_json::Value> {
     row.cells().map(|(_, cell)| sqlserver_cell_to_json(cell)).collect()
+}
+
+fn columns_from_metadata(metadata: &tiberius::ResultMetadata) -> Vec<String> {
+    metadata.columns().iter().map(|c| c.name().to_string()).collect()
+}
+
+async fn collect_first_result_limited(mut stream: QueryStream<'_>, start: Instant) -> Result<QueryResult, String> {
+    let mut columns: Vec<String> = vec![];
+    let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+    let mut truncated = false;
+
+    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
+        match item {
+            QueryItem::Metadata(metadata) if metadata.result_index() == 0 => {
+                columns = columns_from_metadata(&metadata);
+            }
+            QueryItem::Metadata(_) => {}
+            QueryItem::Row(row) if row.result_index() == 0 => {
+                if rows.len() < MAX_ROWS {
+                    rows.push(row_to_json(&row));
+                } else {
+                    truncated = true;
+                }
+            }
+            QueryItem::Row(_) => {}
+        }
+    }
+
+    Ok(QueryResult {
+        columns,
+        rows,
+        affected_rows: 0,
+        execution_time_ms: start.elapsed().as_millis(),
+        truncated,
+        session_id: None,
+        has_more: false,
+    })
+}
+
+struct SqlServerResultSet {
+    columns: Vec<String>,
+    rows: Vec<Vec<serde_json::Value>>,
+    truncated: bool,
+}
+
+fn push_sqlserver_result_set(results: &mut Vec<QueryResult>, result: Option<SqlServerResultSet>, start: Instant) {
+    if let Some(result) = result {
+        if result.rows.is_empty() {
+            return;
+        }
+        results.push(QueryResult {
+            columns: result.columns,
+            rows: result.rows,
+            affected_rows: 0,
+            execution_time_ms: start.elapsed().as_millis(),
+            truncated: result.truncated,
+            session_id: None,
+            has_more: false,
+        });
+    }
+}
+
+async fn collect_result_sets_limited(mut stream: QueryStream<'_>, start: Instant) -> Result<Vec<QueryResult>, String> {
+    let mut results = Vec::new();
+    let mut current: Option<SqlServerResultSet> = None;
+
+    while let Some(item) = stream.try_next().await.map_err(|e| e.to_string())? {
+        match item {
+            QueryItem::Metadata(metadata) => {
+                push_sqlserver_result_set(&mut results, current.take(), start);
+                current = Some(SqlServerResultSet {
+                    columns: columns_from_metadata(&metadata),
+                    rows: Vec::new(),
+                    truncated: false,
+                });
+            }
+            QueryItem::Row(row) => {
+                let result = current.get_or_insert_with(|| SqlServerResultSet {
+                    columns: row.columns().iter().map(|c| c.name().to_string()).collect(),
+                    rows: Vec::new(),
+                    truncated: false,
+                });
+                if result.rows.len() < MAX_ROWS {
+                    result.rows.push(row_to_json(&row));
+                } else {
+                    result.truncated = true;
+                }
+            }
+        }
+    }
+
+    push_sqlserver_result_set(&mut results, current, start);
+    Ok(results)
 }
 
 fn sqlserver_cell_to_json(cell: &ColumnData<'static>) -> serde_json::Value {
@@ -436,28 +530,11 @@ pub async fn execute_query(client: &mut SqlServerClient, sql: &str) -> Result<Qu
     let start = Instant::now();
 
     if starts_with_executable_sql_keyword(sql, &["SELECT", "EXEC", "WITH", "TABLE"]) {
-        let mut stream = client.query(sql, &[]).await.map_err(|e| e.to_string())?;
-        let columns_meta = stream
-            .columns()
-            .await
-            .map_err(|e| e.to_string())?
-            .map(|cols| cols.iter().map(|c| c.name().to_string()).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        let rows = stream.into_first_result().await.map_err(|e| e.to_string())?;
-        let result_rows: Vec<Vec<serde_json::Value>> = rows.iter().map(|row| row_to_json(row)).collect();
-
-        Ok(QueryResult {
-            columns: columns_meta,
-            rows: result_rows,
-            affected_rows: 0,
-            execution_time_ms: start.elapsed().as_millis(),
-            truncated: false,
-            session_id: None,
-            has_more: false,
-        })
+        let stream = client.query(sql, &[]).await.map_err(|e| e.to_string())?;
+        collect_first_result_limited(stream, start).await
     } else if requires_simple_query_batch(sql) {
-        client.simple_query(sql).await.map_err(|e| e.to_string())?.into_results().await.map_err(|e| e.to_string())?;
+        let stream = client.simple_query(sql).await.map_err(|e| e.to_string())?;
+        let _ = collect_result_sets_limited(stream, start).await?;
         Ok(QueryResult {
             columns: vec![],
             rows: vec![],
@@ -484,32 +561,13 @@ pub async fn execute_query(client: &mut SqlServerClient, sql: &str) -> Result<Qu
 pub async fn execute_batch(client: &mut SqlServerClient, sql: &str) -> Result<Vec<QueryResult>, String> {
     let start = Instant::now();
     let stream = client.simple_query(sql).await.map_err(|e| e.to_string())?;
-    let result_sets = stream.into_results().await.map_err(|e| e.to_string())?;
-
-    let mut results = Vec::new();
-    for rows in &result_sets {
-        if rows.is_empty() {
-            continue;
-        }
-        let columns: Vec<String> = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-        let truncated = rows.len() > MAX_ROWS;
-        let result_rows: Vec<Vec<serde_json::Value>> = rows.iter().take(MAX_ROWS).map(|row| row_to_json(row)).collect();
-        results.push(QueryResult {
-            columns,
-            rows: result_rows,
-            affected_rows: 0,
-            execution_time_ms: start.elapsed().as_millis(),
-            truncated,
-            session_id: None,
-            has_more: false,
-        });
-    }
+    let mut results = collect_result_sets_limited(stream, start).await?;
 
     if results.is_empty() {
         results.push(QueryResult {
             columns: vec![],
             rows: vec![],
-            affected_rows: result_sets.len() as u64,
+            affected_rows: 0,
             execution_time_ms: start.elapsed().as_millis(),
             truncated: false,
             session_id: None,
@@ -600,6 +658,18 @@ mod tests {
         assert!(!requires_simple_query_batch("ALTER TABLE dbo.t ADD name NVARCHAR(20);"));
         assert!(!requires_simple_query_batch("CREATE TABLE dbo.t(id INT);"));
         assert!(!requires_simple_query_batch("UPDATE dbo.t SET id = 1;"));
+    }
+
+    #[test]
+    fn sqlserver_user_query_paths_do_not_collect_full_results_before_limiting() {
+        let source = include_str!("sqlserver.rs");
+        let execute_query = source.split("pub async fn execute_query").nth(1).unwrap();
+        let execute_query = execute_query.split("pub async fn execute_batch").next().unwrap();
+        assert!(!execute_query.contains("into_first_result"));
+
+        let execute_batch = source.split("pub async fn execute_batch").nth(1).unwrap();
+        let execute_batch = execute_batch.split("#[cfg(test)]").next().unwrap();
+        assert!(!execute_batch.contains("into_results"));
     }
 
     #[test]
