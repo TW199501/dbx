@@ -175,6 +175,26 @@ test("builds Hive grid save statements without primary keys using row predicates
   ]);
 });
 
+test("builds non-empty YashanDB grid update statements for primary-key edits", () => {
+  const statements = buildDataGridSaveStatements({
+    databaseType: "yashandb",
+    tableMeta: {
+      schema: "DBX_DEMO",
+      tableName: "METRICS_DAILY",
+      primaryKeys: ["DAY_DATE"],
+    },
+    columns: ["DAY_DATE", "ACTIVE_USERS", "QUERY_COUNT", "REVENUE"],
+    rows: [["2026-05-17", 3, 391, 88.8]],
+    dirtyRows: [[0, [[1, 123123]]]],
+    deletedRows: [],
+    newRows: [],
+  });
+
+  assert.deepEqual(statements, [
+    `UPDATE "DBX_DEMO"."METRICS_DAILY" SET "ACTIVE_USERS" = 123123 WHERE "DAY_DATE" = '2026-05-17';`,
+  ]);
+});
+
 test("builds TDengine append-only grid save statements", () => {
   const newTs = tdengineTimestampLiteral("2026-05-16 09:40:00.000");
   const statements = buildDataGridSaveStatements({

@@ -73,6 +73,14 @@ test("describes table editing capabilities for special database engines", () => 
     transaction: false,
   });
 
+  assert.deepEqual(getDatabaseCapability("yashandb").tableData, {
+    insert: false,
+    updateRequiresPrimaryKey: true,
+    deleteRequiresPrimaryKey: true,
+    requiresTransactionalTableForExistingRows: false,
+    transaction: false,
+  });
+
   assert.equal(getDatabaseCapability("oracle").syntheticKey, "oracle-rowid");
   assert.equal(getDatabaseCapability("neo4j").syntheticKey, "neo4j-element-id");
 });

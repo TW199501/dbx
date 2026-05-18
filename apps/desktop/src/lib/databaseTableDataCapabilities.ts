@@ -71,6 +71,15 @@ const DATABASE_CAPABILITY_OVERRIDES: Partial<Record<DatabaseType, Partial<Databa
       transaction: false,
     },
   },
+  yashandb: {
+    tableData: {
+      insert: false,
+      updateRequiresPrimaryKey: true,
+      deleteRequiresPrimaryKey: true,
+      requiresTransactionalTableForExistingRows: false,
+      transaction: false,
+    },
+  },
   neo4j: {
     syntheticKey: "neo4j-element-id",
   },

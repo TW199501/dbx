@@ -59,6 +59,7 @@ test("does not use transactional grid saves for Hive", () => {
   assert.equal(supportsDataGridTransaction("hive"), false);
   assert.equal(supportsDataGridTransaction("trino"), false);
   assert.equal(supportsDataGridTransaction("jdbc"), false);
+  assert.equal(supportsDataGridTransaction("yashandb"), false);
   assert.equal(supportsDataGridTransaction("postgres"), true);
 });
 
