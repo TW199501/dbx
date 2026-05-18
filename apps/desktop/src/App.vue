@@ -218,26 +218,6 @@ function openAiPanel() {
   }
 }
 
-function isActiveObjectSourceReadOnly() {
-  return !!activeTab.value?.objectSource?.readOnlyReason;
-}
-
-function guardWritableObjectSource() {
-  if (!isActiveObjectSourceReadOnly()) return true;
-  toast(t("objects.sourceReadOnlySystemObject"), 5000);
-  return false;
-}
-
-function tryExecuteActiveTab() {
-  if (!guardWritableObjectSource()) return;
-  tryExecute();
-}
-
-function tryExplainActiveTab() {
-  if (!guardWritableObjectSource()) return;
-  tryExplain();
-}
-
 function analyzeHistoryWithAi(entry: HistoryEntry) {
   const connectionId = entry.connection_id || activeTab.value?.connectionId;
   if (!connectionId) {
@@ -274,7 +254,6 @@ async function openSaveSqlDialog() {
   const tab = activeTab.value;
   if (!tab || !tab.sql.trim()) return;
   if (tab.objectSource) {
-    if (!guardWritableObjectSource()) return;
     await saveActiveObjectSource(tab);
     return;
   }
@@ -304,10 +283,6 @@ async function saveActiveObjectSource(tab: NonNullable<typeof activeTab.value>) 
   const connection = connectionStore.getConfig(tab.connectionId);
   const source = tab.objectSource;
   if (!connection || !source) return;
-  if (source.readOnlyReason) {
-    toast(t("objects.sourceReadOnlySystemObject"), 5000);
-    return;
-  }
 
   try {
     const statements = buildExecutableObjectSourceStatements({
@@ -595,7 +570,7 @@ function handleKeydown(e: KeyboardEvent) {
   ) {
     e.preventDefault();
     e.stopPropagation();
-    tryExecuteActiveTab();
+    tryExecute();
   }
 }
 
@@ -789,9 +764,9 @@ onUnmounted(() => {
                   :active-tab="activeTab"
                   :active-connection="activeConnection"
                   :executable-sql="executableSql"
-                  @execute="tryExecuteActiveTab"
+                  @execute="tryExecute()"
                   @cancel="cancelActiveExecution()"
-                  @explain="tryExplainActiveTab"
+                  @explain="tryExplain()"
                   @format-sql="formatActiveSql"
                   @save-sql="void openSaveSqlDialog()"
                   @open-sql="openSqlFile"
@@ -812,9 +787,9 @@ onUnmounted(() => {
                   :cursor-pos="cursorPos"
                   @update:active-output-view="activeOutputView = $event"
                   @fix-with-ai="fixWithAi"
-                  @execute="tryExecuteActiveTab"
+                  @execute="tryExecute()"
                   @cancel="cancelActiveExecution()"
-                  @explain="tryExplainActiveTab"
+                  @explain="tryExplain()"
                   @editor-update="
                     (v: string) => {
                       if (queryStore.activeTabId) queryStore.updateSql(queryStore.activeTabId, v);

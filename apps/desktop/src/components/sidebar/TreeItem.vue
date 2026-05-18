@@ -92,7 +92,6 @@ import {
   treeNodeRowAction,
   treeNodeRowDoubleClickAction,
 } from "@/lib/treeNodeClick";
-import { objectSourceReadOnlyReason } from "@/lib/objectSourceEditor";
 import { formatCsv, formatJson, formatSqlInsert } from "@/lib/exportFormats";
 import { fetchTableDataForExport } from "@/lib/tableDataExport";
 import {
@@ -666,18 +665,6 @@ function viewObjectSource() {
         schema,
         name: node.label,
         objectType,
-        readOnlyReason: (() => {
-          const databaseType = currentDatabaseType();
-          if (!databaseType) return undefined;
-          return (
-            objectSourceReadOnlyReason({
-              databaseType,
-              schema,
-              name: node.label,
-              objectType,
-            }) ?? undefined
-          );
-        })(),
       });
     })
     .catch((e: any) => {
@@ -686,10 +673,6 @@ function viewObjectSource() {
 }
 
 function requestDropObject() {
-  if (currentObjectSourceReadOnlyReason.value) {
-    toast(t("objects.sourceReadOnlySystemObject"), 5000);
-    return;
-  }
   showDropObjectConfirm.value = true;
 }
 
@@ -703,21 +686,7 @@ function nodeRenameObjectType(): RenameableObjectType | null {
 
 const canRenameObject = computed(() => {
   const objectType = nodeRenameObjectType();
-  return (
-    !!objectType && !currentObjectSourceReadOnlyReason.value && supportsObjectRename(currentDatabaseType(), objectType)
-  );
-});
-
-const currentObjectSourceReadOnlyReason = computed(() => {
-  const objectType = objectSourceKindForTreeNode(props.node.type);
-  const databaseType = currentDatabaseType();
-  if (!objectType || !databaseType) return null;
-  return objectSourceReadOnlyReason({
-    databaseType,
-    schema: props.node.schema,
-    name: props.node.label,
-    objectType,
-  });
+  return !!objectType && supportsObjectRename(currentDatabaseType(), objectType);
 });
 
 function openRenameObjectDialog() {
@@ -2005,13 +1974,11 @@ const isDragging = computed(() => dragState.active && dragState.draggedId === pr
           <Pencil class="w-4 h-4 mr-2" />
           {{ t("contextMenu.renameObject") }}
         </ContextMenuItem>
-        <template v-if="!currentObjectSourceReadOnlyReason">
-          <ContextMenuSeparator />
-          <ContextMenuItem class="text-destructive" @click="requestDropObject">
-            <Trash2 class="w-4 h-4 mr-2" />
-            {{ node.type === "procedure" ? t("contextMenu.dropProcedure") : t("contextMenu.dropFunction") }}
-          </ContextMenuItem>
-        </template>
+        <ContextMenuSeparator />
+        <ContextMenuItem class="text-destructive" @click="requestDropObject">
+          <Trash2 class="w-4 h-4 mr-2" />
+          {{ node.type === "procedure" ? t("contextMenu.dropProcedure") : t("contextMenu.dropFunction") }}
+        </ContextMenuItem>
       </template>
 
       <template v-if="isGroupLabel(node)">

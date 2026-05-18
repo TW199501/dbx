@@ -762,7 +762,6 @@ export default {
     cancelEdit: "Cancel",
     sourceSaved: "Source saved",
     sourceSaveFailed: "Failed to save source: {message}",
-    sourceReadOnlySystemObject: "System objects are protected and cannot be modified or deleted",
     schemaColumn: "Schema",
     comment: "Comment",
     loadingSchemas: "Loading schemas...",
