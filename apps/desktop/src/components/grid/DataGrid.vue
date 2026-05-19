@@ -104,6 +104,12 @@ import {
   type ColumnFormatterConfig,
   type DateTimeFormatterUnit,
 } from "@/lib/columnFormatter";
+import {
+  formatTemporalInputValue,
+  parseTemporalInputValue,
+  temporalCellEditorKind,
+  type TemporalCellEditorKind,
+} from "@/lib/dataGridTemporalEditor";
 import { isCancelSearchShortcut, isFocusSearchShortcut } from "@/lib/keyboardShortcuts";
 import { dataGridHeaderContentWidth, scrollbarGutterWidth } from "@/lib/dataGridScrollGutter";
 import { dataGridSaveActionMode, dataGridSaveToolbarState } from "@/lib/dataGridSaveUi";
@@ -1384,6 +1390,43 @@ function canEditCellItem(item: RowItem | undefined, columnIndex: number): boolea
     if (isTdengineExistingRowReadonlyColumn(props.databaseType, column, props.tableMeta?.columns ?? [])) return false;
   }
   return true;
+}
+
+function tableColumnForGridColumn(columnIndex: number): ColumnInfo | undefined {
+  const columnName = props.sourceColumns?.[columnIndex] ?? props.result.columns[columnIndex];
+  if (!columnName) return undefined;
+  return props.tableMeta?.columns.find((column) => column.name.toLowerCase() === columnName.toLowerCase());
+}
+
+function temporalEditorKindForColumn(columnIndex: number): TemporalCellEditorKind | undefined {
+  return temporalCellEditorKind(tableColumnForGridColumn(columnIndex)?.data_type, props.databaseType);
+}
+
+function cellEditInputType(columnIndex: number): string {
+  const kind = temporalEditorKindForColumn(columnIndex);
+  if (kind === "date") return "date";
+  if (kind === "time") return "time";
+  if (kind === "datetime") return "datetime-local";
+  return "text";
+}
+
+function cellEditInputStep(columnIndex: number): string | undefined {
+  return temporalEditorKindForColumn(columnIndex) ? "1" : undefined;
+}
+
+function cellEditInputValue(columnIndex: number): string {
+  const kind = temporalEditorKindForColumn(columnIndex);
+  return kind ? formatTemporalInputValue(editValue.value, kind) : editValue.value;
+}
+
+function onCellEditInput(columnIndex: number, event: Event) {
+  const target = event.target as HTMLInputElement;
+  const kind = temporalEditorKindForColumn(columnIndex);
+  if (!kind) {
+    editValue.value = target.value;
+    return;
+  }
+  editValue.value = parseTemporalInputValue(target.value, kind) ?? "NULL";
 }
 
 function canDeleteRowItem(item: RowItem | undefined): boolean {
@@ -3500,11 +3543,14 @@ defineExpose({
                       >
                         <template v-if="editingCell?.rowId === item.id && editingCell?.col === actualColIdx">
                           <input
-                            v-model="editValue"
+                            :type="cellEditInputType(actualColIdx)"
+                            :step="cellEditInputStep(actualColIdx)"
+                            :value="cellEditInputValue(actualColIdx)"
                             autocapitalize="off"
                             autocorrect="off"
                             spellcheck="false"
                             class="cell-edit-input absolute inset-0 bg-background border-2 border-primary px-2 py-0.5 text-xs outline-none z-10"
+                            @input="onCellEditInput(actualColIdx, $event)"
                             @blur="commitEdit"
                             @click.stop
                             @keydown.stop="onEditKeydown"
