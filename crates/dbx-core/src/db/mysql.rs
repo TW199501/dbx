@@ -286,9 +286,9 @@ pub async fn get_columns(pool: &MySqlPool, database: &str, table: &str) -> Resul
          c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.CHARACTER_MAXIMUM_LENGTH \
          FROM information_schema.COLUMNS c \
          LEFT JOIN information_schema.KEY_COLUMN_USAGE kcu \
-           ON c.TABLE_SCHEMA = kcu.TABLE_SCHEMA \
-           AND c.TABLE_NAME = kcu.TABLE_NAME \
-           AND c.COLUMN_NAME = kcu.COLUMN_NAME \
+           ON c.TABLE_SCHEMA COLLATE utf8mb4_general_ci = kcu.TABLE_SCHEMA COLLATE utf8mb4_general_ci \
+           AND c.TABLE_NAME COLLATE utf8mb4_general_ci = kcu.TABLE_NAME COLLATE utf8mb4_general_ci \
+           AND c.COLUMN_NAME COLLATE utf8mb4_general_ci = kcu.COLUMN_NAME COLLATE utf8mb4_general_ci \
            AND kcu.CONSTRAINT_NAME = 'PRIMARY' \
          WHERE c.TABLE_SCHEMA = {} AND c.TABLE_NAME = {} \
          ORDER BY c.ORDINAL_POSITION",
