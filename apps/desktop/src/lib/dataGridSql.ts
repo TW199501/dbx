@@ -29,6 +29,14 @@ export interface DataGridSaveStatementOptions {
   newRows: GridCellValue[][];
 }
 
+export interface DataGridCopyUpdateStatementOptions {
+  databaseType?: DatabaseType;
+  tableMeta: DataGridTableMeta;
+  columns: string[];
+  sourceColumns?: Array<string | undefined>;
+  rows: GridCellValue[][];
+}
+
 export interface DataGridSaveValidationOptions {
   databaseType?: DatabaseType;
   tableMeta?: DataGridTableMeta;
@@ -152,6 +160,49 @@ export function buildDataGridSaveStatements(options: DataGridSaveStatementOption
     const columns = insertPairs.map((pair) => quoteIdent(options.databaseType, pair.column)).join(", ");
     const values = insertPairs.map((pair) => formatGridSqlLiteral(pair.value, options.databaseType)).join(", ");
     statements.push(`INSERT INTO ${table} (${columns}) VALUES (${values});`);
+  }
+
+  return statements;
+}
+
+export function buildDataGridCopyUpdateStatements(options: DataGridCopyUpdateStatementOptions): string[] {
+  if (options.databaseType === "neo4j" || options.databaseType === "tdengine") return [];
+  const primaryKeys = options.tableMeta.primaryKeys;
+  if (primaryKeys.length === 0) return [];
+
+  const saveColumns = effectiveColumns(options.sourceColumns, options.columns);
+  const primaryKeyIndexes = primaryKeys.map((primaryKey) => findColumnIndex(saveColumns, primaryKey));
+  if (primaryKeyIndexes.some((index) => index === -1)) return [];
+
+  const primaryKeySet = new Set(primaryKeys.map((primaryKey) => normalizeColumnName(primaryKey)));
+  const writableIndexes = saveColumns
+    .map((column, index) => ({ column, index }))
+    .filter((entry): entry is { column: string; index: number } => !!entry.column)
+    .filter((entry) => !primaryKeySet.has(normalizeColumnName(entry.column)))
+    .filter((entry) => !isOracleRowId(options.databaseType, entry.column));
+
+  if (writableIndexes.length === 0) return [];
+
+  const table = qualifiedTableName({
+    databaseType: options.databaseType,
+    schema: options.tableMeta.schema,
+    tableName: options.tableMeta.tableName,
+  });
+
+  const statements: string[] = [];
+  for (const row of options.rows) {
+    if (primaryKeyIndexes.some((index) => row[index] === null || row[index] === undefined)) continue;
+    const sets = writableIndexes
+      .map(
+        ({ column, index }) =>
+          `${quoteIdent(options.databaseType, column)} = ${formatGridSqlLiteral(row[index], options.databaseType)}`,
+      )
+      .join(", ");
+    if (!sets) continue;
+    const where = primaryKeys
+      .map((primaryKey, index) => buildColumnPredicate(options.databaseType, primaryKey, row[primaryKeyIndexes[index]]))
+      .join(" AND ");
+    statements.push(`UPDATE ${table} SET ${sets} WHERE ${where};`);
   }
 
   return statements;

@@ -1077,6 +1077,10 @@ const visibleColumnIndexes = computed(() =>
   visibleColumnIndexesForFilter(displayableColumnIndexes.value, hiddenColumnIndexes.value),
 );
 const visibleColumns = computed(() => visibleColumnIndexes.value.map((index) => props.result.columns[index]));
+const visibleSourceColumns = computed(() => {
+  if (!props.sourceColumns || props.sourceColumns.length !== props.result.columns.length) return undefined;
+  return visibleColumnIndexes.value.map((index) => props.sourceColumns?.[index]);
+});
 const visibleColumnCount = computed(() => visibleColumnIndexes.value.length);
 const displayableColumnCount = computed(() => displayableColumnIndexes.value.length);
 const hiddenColumnCount = computed(() => displayableColumnCount.value - visibleColumnCount.value);
@@ -2080,6 +2084,8 @@ const {
   copyCell,
   copyRow,
   copyRowAsInsert,
+  copyRowAsUpdate,
+  canCopyRowAsUpdate,
   copyAll,
   copySelectionTsv,
   copySelectionCsv,
@@ -2094,10 +2100,9 @@ const {
   columns: visibleColumns,
   displayItems: visibleDisplayItems,
   sql: computed(() => props.sql),
-  tableMeta: computed(() =>
-    props.tableMeta ? { schema: props.tableMeta.schema, tableName: props.tableMeta.tableName } : undefined,
-  ),
+  tableMeta: computed(() => (props.tableMeta ? { ...props.tableMeta } : undefined)),
   databaseType: computed(() => props.databaseType),
+  sourceColumns: visibleSourceColumns,
   hasCellSelection,
   selectedCells,
   selectedRange,
@@ -4312,6 +4317,9 @@ defineExpose({
             </ContextMenuItem>
             <ContextMenuItem @click="copyRowAsInsert">
               {{ isMultiRow ? t("grid.copyRowsInsert", { count: multiRowCount }) : t("grid.copyRowInsert") }}
+            </ContextMenuItem>
+            <ContextMenuItem v-if="canCopyRowAsUpdate" @click="copyRowAsUpdate">
+              {{ isMultiRow ? t("grid.copyRowsUpdate", { count: multiRowCount }) : t("grid.copyRowUpdate") }}
             </ContextMenuItem>
             <ContextMenuItem @click="copyAll">{{ t("grid.copyAll") }}</ContextMenuItem>
           </ContextMenuSubContent>

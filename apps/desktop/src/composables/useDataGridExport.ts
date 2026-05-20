@@ -1,4 +1,4 @@
-import type { ComputedRef, Ref } from "vue";
+import { computed, type ComputedRef, type Ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { isTauriRuntime } from "@/lib/tauriRuntime";
 import { formatCsv, formatJson } from "@/lib/exportFormats";
@@ -14,6 +14,8 @@ import { useToast } from "@/composables/useToast";
 import { displayCellValue, type CellValue } from "@/lib/cellValue";
 import { tryStartExclusiveActivation, type ActionActivationGuard } from "@/lib/actionActivation";
 import { copyToClipboard } from "@/lib/clipboard";
+import { buildDataGridCopyUpdateStatements } from "@/lib/dataGridSql";
+import type { DatabaseType } from "@/types/database";
 
 interface RowItem {
   id: number;
@@ -30,8 +32,9 @@ export interface UseDataGridExportOptions {
   columns: ComputedRef<string[]>;
   displayItems: ComputedRef<RowItem[]>;
   sql: ComputedRef<string | undefined>;
-  tableMeta: ComputedRef<{ schema?: string; tableName: string } | undefined>;
-  databaseType: ComputedRef<string | undefined>;
+  tableMeta: ComputedRef<{ schema?: string; tableName: string; primaryKeys: string[] } | undefined>;
+  databaseType: ComputedRef<DatabaseType | undefined>;
+  sourceColumns: ComputedRef<Array<string | undefined> | undefined>;
   hasCellSelection: ComputedRef<boolean>;
   selectedCells: ComputedRef<SelectionData>;
   selectedRange: ComputedRef<CellSelectionRange | null>;
@@ -55,6 +58,8 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     displayItems,
     sql,
     tableMeta,
+    sourceColumns,
+    databaseType,
     hasCellSelection,
     selectedCells,
     selectedRange,
@@ -79,6 +84,23 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     if (!rowIds?.length) return displayItems.value;
     const rowIdSet = new Set(rowIds);
     return displayItems.value.filter((item) => rowIdSet.has(item.id));
+  }
+
+  function targetedRows(): RowItem[] {
+    if (hasRowSelection.value && selectedRowIds.value.size > 0) {
+      return displayItems.value.filter((item) => selectedRowIds.value.has(item.id));
+    }
+    const range = selectedRange.value;
+    if (range && range.startRow !== range.endRow) {
+      return displayItems.value.slice(range.startRow, range.endRow + 1);
+    }
+    if (!contextCell.value) return [];
+    const item = getRowItem(contextCell.value.rowId);
+    return item ? [item] : [];
+  }
+
+  function updateEligibleRows(): RowItem[] {
+    return targetedRows().filter((item) => !item.isNew && !item.isDeleted);
   }
 
   // --- Selection copy functions ---
@@ -173,6 +195,34 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     const vals = item.data.map((v) => escapeVal(v)).join(", ");
     await copyText(`INSERT INTO ${table} (${cols}) VALUES (${vals});`);
   }
+
+  async function copyRowAsUpdate() {
+    if (!tableMeta.value?.primaryKeys.length) return;
+    const statements = buildDataGridCopyUpdateStatements({
+      databaseType: databaseType.value,
+      tableMeta: tableMeta.value,
+      columns: columns.value,
+      sourceColumns: sourceColumns.value,
+      rows: updateEligibleRows().map((item) => item.data),
+    });
+    if (!statements.length) return;
+    await copyText(statements.join("\n"));
+  }
+
+  const canCopyRowAsUpdate = computed(() => {
+    if (!tableMeta.value?.primaryKeys.length) return false;
+    const rows = updateEligibleRows();
+    if (!rows.length) return false;
+    return (
+      buildDataGridCopyUpdateStatements({
+        databaseType: databaseType.value,
+        tableMeta: tableMeta.value,
+        columns: columns.value,
+        sourceColumns: sourceColumns.value,
+        rows: [rows[0].data],
+      }).length > 0
+    );
+  });
 
   async function copyAll() {
     const header = columns.value.join("\t");
@@ -320,6 +370,8 @@ export function useDataGridExport(options: UseDataGridExportOptions) {
     copyCell,
     copyRow,
     copyRowAsInsert,
+    copyRowAsUpdate,
+    canCopyRowAsUpdate,
     copyAll,
     copySelectionTsv,
     copySelectionCsv,

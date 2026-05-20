@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
+  buildDataGridCopyUpdateStatements,
   buildDataGridRollbackStatements,
   buildDataGridSaveStatements,
   dataGridSaveExecutionSchema,
@@ -38,6 +39,35 @@ test("builds SQL Server grid save statements with schema and bracket quoting", (
     "DELETE FROM [game].[player states] WHERE [role id] = 42;",
     "INSERT INTO [game].[player states] ([role id], [state], [updated at]) VALUES (43, N'new', N'2026-05-05');",
   ]);
+});
+
+test("builds copy-as-update statements using primary keys and non-primary-key columns", () => {
+  const statements = buildDataGridCopyUpdateStatements({
+    databaseType: "postgres",
+    tableMeta: {
+      schema: "public",
+      tableName: "users",
+      primaryKeys: ["id"],
+    },
+    columns: ["id", "name", "status"],
+    rows: [[1, "Ada", "active"]],
+  });
+
+  assert.deepEqual(statements, [`UPDATE "public"."users" SET "name" = 'Ada', "status" = 'active' WHERE "id" = 1;`]);
+});
+
+test("skips copy-as-update statements when primary keys are unavailable", () => {
+  const statements = buildDataGridCopyUpdateStatements({
+    databaseType: "postgres",
+    tableMeta: {
+      tableName: "users",
+      primaryKeys: [],
+    },
+    columns: ["id", "name"],
+    rows: [[1, "Ada"]],
+  });
+
+  assert.deepEqual(statements, []);
 });
 
 test("builds Access grid save statements with backtick identifiers", () => {
