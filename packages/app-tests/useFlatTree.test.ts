@@ -6,6 +6,7 @@ import {
   SIDEBAR_TREE_SCROLL_BUFFER,
   flattenTree,
   scrollTopForExpandedTreeNode,
+  shouldAutoScrollExpandedTreeNode,
   shouldVirtualizeFlatTree,
 } from "../../apps/desktop/src/composables/useFlatTree.ts";
 import type { TreeNode } from "../../apps/desktop/src/types/database.ts";
@@ -57,6 +58,13 @@ test("sidebar virtual tree keeps enough buffered rows for fast scrolling", () =>
 
 test("sidebar virtual tree prerenders enough rows for the first frame", () => {
   assert.ok(SIDEBAR_TREE_PRERENDER_COUNT >= 40);
+});
+
+test("sidebar keeps root connection expansion from changing scroll position", () => {
+  assert.equal(shouldAutoScrollExpandedTreeNode("connection"), false);
+  assert.equal(shouldAutoScrollExpandedTreeNode("connection-group"), false);
+  assert.equal(shouldAutoScrollExpandedTreeNode("database"), true);
+  assert.equal(shouldAutoScrollExpandedTreeNode("group-columns"), true);
 });
 
 test("expanded sidebar nodes scroll enough to reveal inserted rows", () => {

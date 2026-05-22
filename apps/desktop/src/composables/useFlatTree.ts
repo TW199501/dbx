@@ -30,6 +30,10 @@ export function shouldVirtualizeFlatTree(count: number): boolean {
   return count > 0;
 }
 
+export function shouldAutoScrollExpandedTreeNode(type: TreeNodeType): boolean {
+  return type !== "connection" && type !== "connection-group";
+}
+
 export function scrollTopForExpandedTreeNode(options: {
   expandedIndex: number;
   insertedRowCount: number;

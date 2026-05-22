@@ -15,6 +15,7 @@ import {
   SIDEBAR_TREE_SCROLL_BUFFER,
   flattenTree,
   scrollTopForExpandedTreeNode,
+  shouldAutoScrollExpandedTreeNode,
   shouldVirtualizeFlatTree,
   type FlatTreeNode,
 } from "@/composables/useFlatTree";
@@ -144,6 +145,7 @@ function onSearchToggle(node: TreeNode) {
 
 async function onNodeToggled(node: TreeNode, wasExpanded: boolean) {
   if (wasExpanded || !node.isExpanded) return;
+  if (!shouldAutoScrollExpandedTreeNode(node.type)) return;
 
   await nextTick();
 
