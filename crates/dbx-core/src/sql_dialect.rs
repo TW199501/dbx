@@ -174,7 +174,13 @@ pub fn qualified_table_name(database_type: Option<DatabaseType>, schema: Option<
 
 pub fn quote_table_identifier(database_type: Option<DatabaseType>, name: &str) -> String {
     match database_type {
-        Some(DatabaseType::Mysql | DatabaseType::Hive | DatabaseType::Tdengine | DatabaseType::Access) => {
+        Some(
+            DatabaseType::Mysql
+            | DatabaseType::Hive
+            | DatabaseType::Tdengine
+            | DatabaseType::Access
+            | DatabaseType::Bigquery,
+        ) => {
             format!("`{}`", name.replace('`', "``"))
         }
         Some(DatabaseType::Informix) if is_simple_informix_identifier(name) => name.to_string(),

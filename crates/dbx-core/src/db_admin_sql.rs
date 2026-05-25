@@ -136,7 +136,13 @@ pub fn build_drop_table_sql(options: TableAdminSqlOptions) -> String {
 }
 
 pub fn build_empty_table_sql(options: TableAdminSqlOptions) -> String {
-    format!("DELETE FROM {};", qualified_name(options.database_type, options.schema.as_deref(), &options.table_name))
+    let table = qualified_name(options.database_type, options.schema.as_deref(), &options.table_name);
+    match options.database_type {
+        Some(DatabaseType::ClickHouse) => format!("ALTER TABLE {table} DELETE WHERE 1 = 1;"),
+        Some(DatabaseType::Bigquery) => format!("DELETE FROM {table} WHERE TRUE;"),
+        Some(DatabaseType::Cassandra | DatabaseType::Hive | DatabaseType::Kylin) => format!("TRUNCATE TABLE {table};"),
+        _ => format!("DELETE FROM {table};"),
+    }
 }
 
 pub fn build_truncate_table_sql(options: TableAdminSqlOptions) -> String {
@@ -399,6 +405,38 @@ mod tests {
         assert_eq!(build_drop_table_sql(options.clone()), "DROP TABLE \"public\".\"events\";");
         assert_eq!(build_empty_table_sql(options.clone()), "DELETE FROM \"public\".\"events\";");
         assert_eq!(build_truncate_table_sql(options), "TRUNCATE TABLE \"public\".\"events\";");
+        assert_eq!(
+            build_empty_table_sql(TableAdminSqlOptions {
+                database_type: Some(DatabaseType::ClickHouse),
+                schema: None,
+                table_name: "PresetSubjectInfo".to_string(),
+            }),
+            "ALTER TABLE \"PresetSubjectInfo\" DELETE WHERE 1 = 1;"
+        );
+        assert_eq!(
+            build_truncate_table_sql(TableAdminSqlOptions {
+                database_type: Some(DatabaseType::ClickHouse),
+                schema: None,
+                table_name: "PresetSubjectInfo".to_string(),
+            }),
+            "TRUNCATE TABLE \"PresetSubjectInfo\";"
+        );
+        assert_eq!(
+            build_empty_table_sql(TableAdminSqlOptions {
+                database_type: Some(DatabaseType::Bigquery),
+                schema: None,
+                table_name: "events".to_string(),
+            }),
+            "DELETE FROM `events` WHERE TRUE;"
+        );
+        assert_eq!(
+            build_empty_table_sql(TableAdminSqlOptions {
+                database_type: Some(DatabaseType::Cassandra),
+                schema: None,
+                table_name: "events".to_string(),
+            }),
+            "TRUNCATE TABLE \"events\";"
+        );
         assert_eq!(
             build_truncate_table_sql(TableAdminSqlOptions {
                 database_type: Some(DatabaseType::DuckDb),
