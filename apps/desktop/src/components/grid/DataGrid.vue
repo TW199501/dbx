@@ -158,10 +158,13 @@ import { useDataGridColumnResize } from "@/composables/useDataGridColumnResize";
 import { useDataGridSelection } from "@/composables/useDataGridSelection";
 import { useDataGridEditor } from "@/composables/useDataGridEditor";
 import { useSqlHighlighter } from "@/composables/useSqlHighlighter";
+import { useCellDetailEditor, type UseCellDetailEditorReturn } from "@/composables/useCellDetailEditor";
+import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settingsStore";
 
 const { t } = useI18n();
 const settingsStore = useSettingsStore();
+const { isDark } = useTheme();
 const { toast } = useToast();
 const { highlight } = useSqlHighlighter();
 
@@ -2217,6 +2220,60 @@ const detailTemporalEditorKind = computed(() => {
   return detail ? temporalEditorKindForColumn(detail.colIndex) : undefined;
 });
 
+// CodeMirror-based cell detail editors
+const detailsEditorContainer = ref<HTMLElement>();
+const valueEditorContainer = ref<HTMLElement>();
+let detailsDetailEditor: UseCellDetailEditorReturn | null = null;
+let valueDetailEditor: UseCellDetailEditorReturn | null = null;
+
+const editorThemeAccessor = () => settingsStore.editorSettings.theme;
+const editorAppAppearance = () => (isDark.value ? "dark" : "light") as import("@/lib/appTheme").AppThemeAppearance;
+const editorFontSize = () => settingsStore.editorSettings.fontSize;
+const editorFontFamily = () => settingsStore.editorSettings.fontFamily;
+
+function getDetailEditor(): UseCellDetailEditorReturn | null {
+  return activeCellDetailTab.value === "valueEditor" ? valueDetailEditor : detailsDetailEditor;
+}
+
+watch(detailsEditorContainer, async (el) => {
+  if (el && !detailsDetailEditor) {
+    detailsDetailEditor = useCellDetailEditor({
+      onChange: (v) => {
+        detailEditValue.value = v;
+      },
+      onEscape: () => cancelDetailEdit(),
+      editorTheme: editorThemeAccessor,
+      appAppearance: editorAppAppearance,
+      fontSize: editorFontSize,
+      fontFamily: editorFontFamily,
+    });
+    await detailsDetailEditor.create(el, detailEditValue.value, activeCellDetail.value?.type);
+  } else if (!el && detailsDetailEditor) {
+    detailsDetailEditor.destroy();
+    detailsDetailEditor = null;
+  }
+});
+
+watch(valueEditorContainer, async (el) => {
+  if (el && !valueDetailEditor) {
+    valueDetailEditor = useCellDetailEditor({
+      onChange: (v) => {
+        detailEditValue.value = v;
+      },
+      onEscape: () => restoreDetailOriginalValue(),
+      onBlur: () => commitValueEditorEdit(),
+      editorTheme: editorThemeAccessor,
+      appAppearance: editorAppAppearance,
+      fontSize: editorFontSize,
+      fontFamily: editorFontFamily,
+    });
+    await valueDetailEditor.create(el, detailEditValue.value, activeCellDetail.value?.type);
+  } else if (!el && valueDetailEditor) {
+    valueDetailEditor.destroy();
+    valueDetailEditor = null;
+  }
+});
+
 function resetDetailEdit() {
   isEditingDetail.value = false;
   detailEditValue.value = "";
@@ -2272,10 +2329,18 @@ function cancelDetailEdit() {
   resetDetailEdit();
 }
 
+function syncEditorFromDetailEdit() {
+  const editor = getDetailEditor();
+  if (editor) {
+    editor.setValue(detailEditValue.value, activeCellDetail.value?.type);
+  }
+}
+
 function cancelValueEditorEdit() {
   const detail = activeCellDetail.value;
   if (!detail || !detail.isEditable) return;
   detailEditValue.value = cellDetailEditorText(detail.value, detail.type);
+  syncEditorFromDetailEdit();
   isEditingDetail.value = true;
 }
 
@@ -2307,6 +2372,7 @@ function restoreDetailOriginalValue() {
   }
 
   detailEditValue.value = cellDetailEditorText(restoredValue, detail.type);
+  syncEditorFromDetailEdit();
   isEditingDetail.value = activeCellDetailTab.value === "valueEditor";
   detailCell.value = { ...detailCell.value! };
 }
@@ -2314,6 +2380,7 @@ function restoreDetailOriginalValue() {
 function setValueEditorNull() {
   setDetailNull();
   detailEditValue.value = cellDetailEditorText(null);
+  syncEditorFromDetailEdit();
   isEditingDetail.value = activeCellDetailTab.value === "valueEditor";
 }
 
@@ -2321,6 +2388,7 @@ function formatValueEditorJson() {
   const detail = activeCellDetail.value;
   if (!detail || !canFormatCellDetailJson(detailEditValue.value, detail.type)) return;
   detailEditValue.value = formatJsonText(detailEditValue.value) ?? detailEditValue.value;
+  syncEditorFromDetailEdit();
 }
 
 function setDetailNull() {
@@ -5110,13 +5178,7 @@ defineExpose({
                           @cancel="cancelDetailEdit"
                           @commit="commitDetailEdit"
                         />
-                        <textarea
-                          v-else
-                          v-model="detailEditValue"
-                          wrap="off"
-                          class="w-full h-40 overflow-auto rounded border bg-background p-2 font-mono text-xs outline-none resize-y focus:border-primary"
-                          @keydown.escape.stop="cancelDetailEdit"
-                        />
+                        <div v-else ref="detailsEditorContainer" class="w-full h-40 rounded border overflow-hidden" />
                         <div class="flex gap-1 mt-1">
                           <Button size="sm" class="h-6 text-xs" @click="commitDetailEdit">
                             {{ t("dangerDialog.confirm") }}
@@ -5213,13 +5275,10 @@ defineExpose({
                       @cancel="cancelValueEditorEdit"
                       @commit="commitValueEditorEdit"
                     />
-                    <textarea
+                    <div
                       v-else
-                      v-model="detailEditValue"
-                      wrap="off"
-                      class="min-h-0 flex-1 w-full overflow-auto rounded border bg-background p-2 font-mono text-xs outline-none resize-none focus:border-primary"
-                      @blur="commitValueEditorEdit"
-                      @keydown.escape.stop="restoreDetailOriginalValue"
+                      ref="valueEditorContainer"
+                      class="min-h-0 flex-1 w-full rounded border overflow-hidden"
                     />
                   </div>
                   <div class="flex gap-1 mt-2 shrink-0">
