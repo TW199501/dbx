@@ -13,7 +13,7 @@ test("parses postgres connection URLs", () => {
     password: "secret",
     database: "app",
     urlParams: "sslmode=require",
-    ssl: false,
+    ssl: true,
   });
 });
 
@@ -28,6 +28,11 @@ test("parses mysql URLs with encoded credentials", () => {
   assert.equal(parsed.password, "p@ss");
   assert.equal(parsed.database, "shop");
   assert.equal(parsed.urlParams, "charset=utf8mb4");
+});
+
+test("parses mysql TLS URL params into the SSL switch state", () => {
+  assert.equal(parseConnectionUrl("mysql://root@tidb.example.com:4000/test?ssl-mode=required").ssl, true);
+  assert.equal(parseConnectionUrl("mysql://root@tidb.example.com:4000/test?require_ssl=true").ssl, true);
 });
 
 test("parses JDBC URLs by using the inner database URL", () => {
@@ -140,7 +145,10 @@ test("uses selected HTTP-compatible profile for HTTP URLs", () => {
 });
 
 test("parses HTTPS ClickHouse URLs with selected profile", () => {
-  const parsed = parseConnectionUrl("https://default:secret@clickhouse.example.com:8443/default?secure=true", "clickhouse");
+  const parsed = parseConnectionUrl(
+    "https://default:secret@clickhouse.example.com:8443/default?secure=true",
+    "clickhouse",
+  );
 
   assert.equal(parsed.dbType, "clickhouse");
   assert.equal(parsed.driverProfile, "clickhouse");

@@ -175,7 +175,7 @@ impl AppState {
                 PoolKind::Mysql(db::mysql::connect_bare(&url).await?, MysqlMode::Bare)
             }
             DatabaseType::Mysql => {
-                let pool = db::mysql::connect(&url).await?;
+                let pool = db::mysql::connect_with_ca_cert(&url, Some(&db_config.ca_cert_path)).await?;
                 let mode = detect_ob_oracle_mode(&db_config, &pool).await;
                 PoolKind::Mysql(pool, mode)
             }
@@ -611,9 +611,14 @@ fn native_postgres_url_config(config: &ConnectionConfig) -> Option<ConnectionCon
                 let params = normalized.url_params.as_deref().unwrap_or("").trim().trim_start_matches('?');
                 if !params.to_lowercase().contains("sslmode=") {
                     normalized.url_params = Some(if params.is_empty() {
-                        "sslmode=disable".to_string()
+                        if config.ssl {
+                            "sslmode=require".to_string()
+                        } else {
+                            "sslmode=disable".to_string()
+                        }
                     } else {
-                        format!("sslmode=disable&{params}")
+                        let sslmode = if config.ssl { "sslmode=require" } else { "sslmode=disable" };
+                        format!("{sslmode}&{params}")
                     });
                 }
             }
@@ -1225,6 +1230,20 @@ mod tests {
         assert_eq!(
             connection_url_for_endpoint(&config, &config.host, config.port),
             "postgres://gaussdb:secret@127.0.0.1:3306/postgres?sslmode=require&application_name=dbx"
+        );
+    }
+
+    #[test]
+    fn gaussdb_endpoint_url_uses_require_sslmode_when_tls_enabled() {
+        let mut config = mysql_config(Some("postgres"));
+        config.db_type = DatabaseType::Gaussdb;
+        config.username = "gaussdb".to_string();
+        config.password = "secret".to_string();
+        config.ssl = true;
+
+        assert_eq!(
+            connection_url_for_endpoint(&config, &config.host, config.port),
+            "postgres://gaussdb:secret@127.0.0.1:3306/postgres?sslmode=require"
         );
     }
 

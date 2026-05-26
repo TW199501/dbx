@@ -5,6 +5,7 @@ use mysql_async::prelude::*;
 use rust_decimal::Decimal;
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -172,15 +173,19 @@ fn mysql_value_to_json(row: &mysql_async::Row, idx: usize) -> serde_json::Value 
 }
 
 pub async fn connect(url: &str) -> Result<MySqlPool, String> {
+    connect_with_ca_cert(url, None).await
+}
+
+pub async fn connect_with_ca_cert(url: &str, ca_cert_path: Option<&str>) -> Result<MySqlPool, String> {
     let timeout = super::parse_connect_timeout(url);
-    let pool = create_pool(url)?;
+    let pool = create_pool(url, ca_cert_path)?;
     let result = verify_pool_connection(&pool, timeout).await;
 
     if let Err(ref e) = result {
         if mysql_error_should_retry_without_ssl(e) {
             if let Some(fallback_url) = ssl_fallback_url(url) {
                 log::info!("SSL handshake failed, retrying with ssl-mode=disabled");
-                let fallback_pool = create_pool(&fallback_url)?;
+                let fallback_pool = create_pool(&fallback_url, None)?;
                 return match verify_pool_connection(&fallback_pool, timeout).await {
                     Ok(()) => Ok(fallback_pool),
                     Err(e) => Err(e),
@@ -192,16 +197,24 @@ pub async fn connect(url: &str) -> Result<MySqlPool, String> {
     result.map(|_| pool)
 }
 
-fn create_pool(url: &str) -> Result<MySqlPool, String> {
+fn create_pool(url: &str, ca_cert_path: Option<&str>) -> Result<MySqlPool, String> {
     let opts = mysql_async::Opts::from_url(&mysql_async_url(url)).map_err(|e| format!("Invalid MySQL URL: {e}"))?;
     let pool_opts = mysql_async::PoolOpts::new()
         .with_constraints(mysql_async::PoolConstraints::new(1, 1).unwrap())
         .with_inactive_connection_ttl(Duration::from_secs(300));
-    let builder = mysql_async::OptsBuilder::from_opts(opts)
+    let mut builder = mysql_async::OptsBuilder::from_opts(opts)
         .stmt_cache_size(0)
         .prefer_socket(false)
         .pool_opts(Some(pool_opts))
         .setup(mysql_setup_queries(url));
+    if let Some(ca_cert_path) =
+        ca_cert_path.map(str::trim).filter(|path| !path.is_empty()).filter(|_| mysql_url_requires_ssl(url))
+    {
+        let ssl_opts = mysql_async::SslOpts::default()
+            .with_root_certs(vec![PathBuf::from(ca_cert_path).into()])
+            .with_danger_skip_domain_validation(true);
+        builder = builder.ssl_opts(ssl_opts);
+    }
     Ok(MySqlPool::new(builder))
 }
 
@@ -251,6 +264,9 @@ fn mysql_error_should_retry_with_text_protocol(error: &str) -> bool {
 }
 
 fn ssl_fallback_url(url: &str) -> Option<String> {
+    if mysql_url_requires_ssl(url) {
+        return None;
+    }
     if url.contains("ssl-mode=preferred") {
         Some(url.replace("ssl-mode=preferred", "ssl-mode=disabled"))
     } else if !url.contains("ssl-mode=") {
@@ -261,26 +277,69 @@ fn ssl_fallback_url(url: &str) -> Option<String> {
     }
 }
 
+fn mysql_url_requires_ssl(url: &str) -> bool {
+    let Some((_, query)) = url.split_once('?') else {
+        return false;
+    };
+    query.split('&').any(|segment| {
+        let Some((key, value)) = segment.split_once('=') else {
+            return false;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        (key.eq_ignore_ascii_case("require_ssl") && value.eq_ignore_ascii_case("true"))
+            || ((key.eq_ignore_ascii_case("ssl-mode") || key.eq_ignore_ascii_case("sslmode"))
+                && matches!(
+                    value.to_ascii_lowercase().replace('-', "_").as_str(),
+                    "required" | "require" | "verify_ca" | "verify_identity"
+                ))
+    })
+}
+
 fn mysql_async_url(url: &str) -> Cow<'_, str> {
     let Some((base, query)) = url.split_once('?') else {
         return Cow::Borrowed(url);
     };
 
-    let filtered: Vec<&str> = query
-        .split('&')
-        .filter(|segment| {
-            let segment = segment.trim();
-            !segment.is_empty()
-                && !segment.starts_with("ssl-mode=")
-                && !segment.starts_with("charset=")
-                && !segment.starts_with("time_zone=")
-                && !segment.starts_with("time-zone=")
-                && !segment.to_ascii_lowercase().starts_with("connect_timeout=")
-                && !segment.to_ascii_lowercase().starts_with("connecttimeout=")
-        })
-        .collect();
+    let original_count = query.split('&').filter(|segment| !segment.trim().is_empty()).count();
+    let mut filtered: Vec<String> = Vec::new();
+    for segment in query.split('&') {
+        let segment = segment.trim();
+        if segment.is_empty()
+            || segment.starts_with("charset=")
+            || segment.starts_with("time_zone=")
+            || segment.starts_with("time-zone=")
+            || segment.to_ascii_lowercase().starts_with("connect_timeout=")
+            || segment.to_ascii_lowercase().starts_with("connecttimeout=")
+        {
+            continue;
+        }
 
-    if filtered.len() == query.split('&').filter(|segment| !segment.trim().is_empty()).count() {
+        let Some((key, value)) = segment.split_once('=') else {
+            filtered.push(segment.to_string());
+            continue;
+        };
+        if key.eq_ignore_ascii_case("ssl-mode") || key.eq_ignore_ascii_case("sslmode") {
+            match value.to_ascii_lowercase().replace('-', "_").as_str() {
+                "disabled" | "disable" => filtered.push("require_ssl=false".to_string()),
+                "required" | "require" => {
+                    filtered.push("require_ssl=true".to_string());
+                    filtered.push("verify_ca=false".to_string());
+                    filtered.push("verify_identity=false".to_string());
+                }
+                "verify_ca" => {
+                    filtered.push("require_ssl=true".to_string());
+                    filtered.push("verify_identity=false".to_string());
+                }
+                "verify_identity" => filtered.push("require_ssl=true".to_string()),
+                _ => {}
+            }
+            continue;
+        }
+        filtered.push(segment.to_string());
+    }
+
+    if filtered.len() == original_count {
         Cow::Borrowed(url)
     } else if filtered.is_empty() {
         Cow::Owned(base.to_string())
@@ -291,7 +350,7 @@ fn mysql_async_url(url: &str) -> Cow<'_, str> {
 
 pub async fn connect_bare(url: &str) -> Result<MySqlPool, String> {
     let timeout = super::parse_connect_timeout(url);
-    let pool = create_pool(url)?;
+    let pool = create_pool(url, None)?;
     verify_pool_connection(&pool, timeout).await.map(|_| pool)
 }
 
@@ -855,6 +914,22 @@ mod tests {
         let default = crate::db::connection_timeout();
         let url = "mysql://host:3306/db";
         assert_eq!(crate::db::parse_connect_timeout(url), default);
+    }
+
+    #[test]
+    fn mysql_async_url_translates_standard_required_ssl_mode() {
+        let url = "mysql://host:3306/db?ssl-mode=required&charset=utf8mb4";
+
+        assert_eq!(
+            mysql_async_url(url).as_ref(),
+            "mysql://host:3306/db?require_ssl=true&verify_ca=false&verify_identity=false"
+        );
+    }
+
+    #[test]
+    fn ssl_fallback_does_not_disable_required_tls() {
+        assert_eq!(ssl_fallback_url("mysql://host:3306/db?require_ssl=true&charset=utf8mb4"), None);
+        assert_eq!(ssl_fallback_url("mysql://host:3306/db?ssl-mode=verify_ca&charset=utf8mb4"), None);
     }
 
     #[test]

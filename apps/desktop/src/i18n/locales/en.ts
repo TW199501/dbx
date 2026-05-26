@@ -137,6 +137,7 @@ export default {
     next: "Next",
     back: "Previous",
     basicTab: "Connection",
+    tlsTab: "TLS/SSL",
     test: "Test",
     testing: "Testing...",
     copyTestResult: "Copy test result",

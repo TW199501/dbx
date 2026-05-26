@@ -223,7 +223,7 @@ pub async fn test_connection(state: State<'_, Arc<AppState>>, config: Connection
                 }
                 Err(e) => Err(e),
             },
-            DatabaseType::Mysql => match db::mysql::connect(&url).await {
+            DatabaseType::Mysql => match db::mysql::connect_with_ca_cert(&url, Some(&config.ca_cert_path)).await {
                 Ok(pool) => {
                     let _ = pool.disconnect().await;
                     Ok("Connection successful".to_string())
@@ -348,7 +348,10 @@ pub async fn connect_db(state: State<'_, Arc<AppState>>, config: ConnectionConfi
         DatabaseType::Mysql if db_config.needs_bare_mysql() => {
             PoolKind::Mysql(db::mysql::connect_bare(&url).await?, MysqlMode::Bare)
         }
-        DatabaseType::Mysql => PoolKind::Mysql(db::mysql::connect(&url).await?, MysqlMode::Normal),
+        DatabaseType::Mysql => PoolKind::Mysql(
+            db::mysql::connect_with_ca_cert(&url, Some(&db_config.ca_cert_path)).await?,
+            MysqlMode::Normal,
+        ),
         DatabaseType::Doris | DatabaseType::StarRocks => {
             PoolKind::Mysql(db::mysql::connect_bare(&url).await?, MysqlMode::Bare)
         }

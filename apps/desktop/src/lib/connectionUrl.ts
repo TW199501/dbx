@@ -66,6 +66,35 @@ function databaseFromPath(pathname: string): string | undefined {
   return decodeUrlPart(value.split("/")[0]);
 }
 
+function queryParamValue(params: string, key: string): string | undefined {
+  for (const part of params.split(/[&;]/)) {
+    if (!part) continue;
+    const [rawKey, ...rest] = part.split("=");
+    if (decodeUrlPart(rawKey).toLowerCase() === key.toLowerCase()) {
+      return decodeUrlPart(rest.join("=")).trim();
+    }
+  }
+  return undefined;
+}
+
+function urlParamsRequireTls(dbType: DatabaseType, params: string): boolean {
+  if (dbType === "mysql") {
+    const requireSsl = queryParamValue(params, "require_ssl")?.toLowerCase();
+    if (requireSsl === "true" || requireSsl === "1" || requireSsl === "yes") return true;
+    const sslMode = (queryParamValue(params, "ssl-mode") || queryParamValue(params, "sslmode") || "")
+      .toLowerCase()
+      .replace("-", "_");
+    return sslMode === "required" || sslMode === "require" || sslMode === "verify_ca" || sslMode === "verify_identity";
+  }
+
+  if (dbType === "postgres" || dbType === "redshift") {
+    const sslMode = (queryParamValue(params, "sslmode") || "").toLowerCase();
+    return sslMode === "require" || sslMode === "verify-ca" || sslMode === "verify-full";
+  }
+
+  return false;
+}
+
 export function connectionProfileForScheme(scheme: string, preferredProfile?: string): ConnectionProfile | undefined {
   if ((scheme === "http" || scheme === "https") && preferredProfile) {
     return HTTP_SELECTED_PROFILES[preferredProfile];
@@ -226,7 +255,7 @@ export function parseConnectionUrl(value: string, preferredProfile?: string): Pa
     password: decodeUrlPart(parsed.password),
     database: databaseFromPath(parsed.pathname),
     urlParams,
-    ssl: scheme === "rediss" || scheme === "https",
+    ssl: scheme === "rediss" || scheme === "https" || urlParamsRequireTls(profile.type, urlParams),
   };
 }
 

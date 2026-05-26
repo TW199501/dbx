@@ -136,6 +136,7 @@ export default {
     next: "下一步",
     back: "上一步",
     basicTab: "连接信息",
+    tlsTab: "TLS/SSL",
     test: "测试",
     testing: "测试中...",
     copyTestResult: "复制测试结果",

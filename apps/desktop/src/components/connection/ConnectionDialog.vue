@@ -38,7 +38,7 @@ type DbOption = { value: string; label: string };
 type DbCategory = { key: string; title: string; options: DbOption[] };
 type DialogStep = "select" | "config";
 type DbPickerView = "icon" | "list";
-type ConfigTab = "connection" | "ssh" | "proxy";
+type ConfigTab = "connection" | "tls" | "ssh" | "proxy";
 
 const { t } = useI18n();
 const { toast } = useToast();
@@ -550,6 +550,18 @@ const filePathPlaceholder = computed(() => {
   return "/path/to/database.db or :memory:";
 });
 const supportsMemoryDatabasePath = computed(() => form.value.db_type === "sqlite" || form.value.db_type === "duckdb");
+const tlsCapableDatabaseTypes = new Set<DatabaseType>([
+  "mysql",
+  "postgres",
+  "redshift",
+  "gaussdb",
+  "opengauss",
+  "redis",
+  "clickhouse",
+  "elasticsearch",
+]);
+const supportsTlsToggle = computed(() => tlsCapableDatabaseTypes.has(form.value.db_type));
+const supportsCaCertificatePath = computed(() => form.value.db_type === "mysql" || form.value.db_type === "clickhouse");
 const canUseSsh = computed(() => form.value.db_type !== "sqlite" && form.value.db_type !== "access");
 const canUseProxy = computed(
   () => form.value.db_type !== "sqlite" && form.value.db_type !== "duckdb" && form.value.db_type !== "access",
@@ -817,6 +829,12 @@ watch(canUseSsh, (value) => {
 
 watch(canUseProxy, (value) => {
   if (!value && configTab.value === "proxy") {
+    configTab.value = "connection";
+  }
+});
+
+watch(supportsTlsToggle, (value) => {
+  if (!value && configTab.value === "tls") {
     configTab.value = "connection";
   }
 });
@@ -1117,9 +1135,13 @@ function openExternalUrl(url: string) {
       <template v-else>
         <div class="space-y-3">
           <Tabs v-model="configTab" class="min-h-0">
-            <div v-if="canUseSsh || canUseProxy" class="flex items-center justify-between border-b pb-2">
+            <div
+              v-if="supportsTlsToggle || canUseSsh || canUseProxy"
+              class="flex items-center justify-between border-b pb-2"
+            >
               <TabsList>
                 <TabsTrigger value="connection">{{ t("connection.basicTab") }}</TabsTrigger>
+                <TabsTrigger v-if="supportsTlsToggle" value="tls">{{ t("connection.tlsTab") }}</TabsTrigger>
                 <TabsTrigger v-if="canUseSsh" value="ssh">{{ t("connection.sshTunnel") }}</TabsTrigger>
                 <TabsTrigger v-if="canUseProxy" value="proxy">{{ t("connection.proxy") }}</TabsTrigger>
               </TabsList>
@@ -1339,13 +1361,6 @@ function openExternalUrl(url: string) {
                       :placeholder="t('connection.databasePlaceholder')"
                     />
                   </div>
-                  <div class="grid grid-cols-4 items-center gap-4">
-                    <Label class="text-right text-xs">SSL/TLS</Label>
-                    <div class="col-span-3">
-                      <input type="checkbox" v-model="form.ssl" class="mr-2" />
-                      <span class="text-xs text-muted-foreground">{{ t("connection.sshEnable") }}</span>
-                    </div>
-                  </div>
                 </template>
 
                 <!-- MongoDB: URL or form -->
@@ -1454,33 +1469,6 @@ function openExternalUrl(url: string) {
                     <Input v-model="form.database" class="col-span-3" :placeholder="databasePlaceholder" />
                   </div>
 
-                  <div v-if="form.db_type === 'clickhouse'" class="grid grid-cols-4 items-center gap-4">
-                    <Label class="text-right text-xs">SSL/TLS</Label>
-                    <label class="col-span-3 flex items-center gap-2 cursor-pointer">
-                      <input type="checkbox" v-model="form.ssl" class="mr-0" />
-                      <span class="text-xs text-muted-foreground">{{ t("connection.sslEnable") }}</span>
-                    </label>
-                  </div>
-
-                  <div v-if="form.db_type === 'clickhouse'" class="grid grid-cols-4 items-center gap-4">
-                    <Label class="text-right text-xs">{{ t("connection.caCertPath") }}</Label>
-                    <div class="col-span-3 flex items-center gap-1">
-                      <Input
-                        v-model="form.ca_cert_path"
-                        class="flex-1"
-                        :placeholder="t('connection.caCertPathPlaceholder')"
-                      />
-                      <Tooltip v-if="isDesktop">
-                        <TooltipTrigger as-child>
-                          <Button variant="outline" size="icon" class="h-9 w-9 shrink-0" @click="browseCaCertPath">
-                            <FolderOpen class="h-4 w-4" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>{{ t("connection.caCertPathBrowse") }}</TooltipContent>
-                      </Tooltip>
-                    </div>
-                  </div>
-
                   <div v-if="form.db_type === 'oracle'" class="grid grid-cols-4 items-center gap-4">
                     <Label class="text-right text-xs">连接方式</Label>
                     <div
@@ -1587,6 +1575,44 @@ function openExternalUrl(url: string) {
                     />
                   </div>
                 </template>
+              </div>
+            </TabsContent>
+
+            <TabsContent v-if="supportsTlsToggle" value="tls" class="m-0">
+              <div class="grid gap-4 py-4 pr-2 max-h-[65vh] overflow-y-auto">
+                <div class="grid grid-cols-4 items-center gap-4">
+                  <Label class="text-right text-xs">SSL/TLS</Label>
+                  <label class="col-span-3 flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" v-model="form.ssl" class="mr-0" />
+                    <span class="text-xs text-muted-foreground">{{ t("connection.sslEnable") }}</span>
+                  </label>
+                </div>
+
+                <div v-if="supportsCaCertificatePath" class="grid grid-cols-4 items-center gap-4">
+                  <Label class="text-right text-xs">{{ t("connection.caCertPath") }}</Label>
+                  <div class="col-span-3 flex items-center gap-1">
+                    <Input
+                      v-model="form.ca_cert_path"
+                      class="flex-1"
+                      :placeholder="t('connection.caCertPathPlaceholder')"
+                      :disabled="!form.ssl"
+                    />
+                    <Tooltip v-if="isDesktop">
+                      <TooltipTrigger as-child>
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          class="h-9 w-9 shrink-0"
+                          :disabled="!form.ssl"
+                          @click="browseCaCertPath"
+                        >
+                          <FolderOpen class="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{{ t("connection.caCertPathBrowse") }}</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </div>
               </div>
             </TabsContent>
 
