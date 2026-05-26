@@ -372,7 +372,7 @@ watch(
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="sm:max-w-2xl max-h-[80vh] flex flex-col overflow-hidden">
+    <DialogContent class="sm:max-w-2xl max-h-[80vh] flex flex-col overflow-hidden" @interact-outside.prevent>
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
           <GitCompareArrows class="w-4 h-4" />
@@ -491,12 +491,6 @@ watch(
             </Select>
           </div>
         </div>
-
-        <Button v-if="step === 'select'" size="sm" :disabled="!canCompare || loadingMeta" @click="startCompare">
-          <Loader2 v-if="loadingMeta" class="w-3.5 h-3.5 mr-1 animate-spin" />
-          <GitCompareArrows v-else class="w-3.5 h-3.5 mr-1" />
-          {{ loadingMeta ? t("common.loading") : t("diff.compare") }}
-        </Button>
 
         <!-- Comparing -->
         <div v-if="step === 'comparing'" class="flex items-center justify-center py-8 text-sm text-muted-foreground">
@@ -642,6 +636,15 @@ watch(
           </template>
         </template>
       </div>
+
+      <DialogFooter v-if="!(step === 'result' && diffs.length > 0)" class="flex items-center gap-2">
+        <Button variant="outline" @click="open = false">{{ t("common.close") }}</Button>
+        <Button v-if="step === 'select'" size="sm" :disabled="!canCompare || loadingMeta" @click="startCompare">
+          <Loader2 v-if="loadingMeta" class="w-3.5 h-3.5 mr-1 animate-spin" />
+          <GitCompareArrows v-else class="w-3.5 h-3.5 mr-1" />
+          {{ loadingMeta ? t("common.loading") : t("diff.compare") }}
+        </Button>
+      </DialogFooter>
 
       <DialogFooter v-if="step === 'result' && diffs.length > 0" class="flex items-center gap-2">
         <span v-if="executing" class="text-xs text-muted-foreground mr-auto">

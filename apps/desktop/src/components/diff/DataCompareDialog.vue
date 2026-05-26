@@ -689,7 +689,7 @@ watch(
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="sm:max-w-4xl max-h-[85vh] flex flex-col overflow-hidden">
+    <DialogContent class="sm:max-w-4xl max-h-[85vh] flex flex-col overflow-hidden" @interact-outside.prevent>
       <DialogHeader>
         <DialogTitle class="flex items-center gap-2">
           <GitCompareArrows class="w-4 h-4" />
@@ -903,15 +903,6 @@ watch(
           </Select>
         </div>
 
-        <div class="flex items-center gap-3">
-          <Button size="sm" :disabled="!canCompare || comparing" @click="startCompare">
-            <Loader2 v-if="comparing" class="w-3.5 h-3.5 animate-spin mr-1" />
-            <GitCompareArrows v-else class="w-3.5 h-3.5 mr-1" />
-            {{ t("dataCompare.compare") }}
-          </Button>
-          <span v-if="compareProgressLabel" class="text-xs text-muted-foreground">{{ compareProgressLabel }}</span>
-        </div>
-
         <div v-if="hasResults" class="space-y-3">
           <div class="rounded-lg border p-3 text-sm">
             {{ summary }}
@@ -998,6 +989,18 @@ watch(
           </div>
         </div>
       </div>
+
+      <DialogFooter v-if="!(hasResults && syncSql.trim())">
+        <Button variant="outline" @click="open = false">{{ t("common.close") }}</Button>
+        <span v-if="compareProgressLabel" class="text-xs text-muted-foreground self-center">{{
+          compareProgressLabel
+        }}</span>
+        <Button size="sm" :disabled="!canCompare || comparing" @click="startCompare">
+          <Loader2 v-if="comparing" class="w-3.5 h-3.5 animate-spin mr-1" />
+          <GitCompareArrows v-else class="w-3.5 h-3.5 mr-1" />
+          {{ t("dataCompare.compare") }}
+        </Button>
+      </DialogFooter>
 
       <DialogFooter v-if="hasResults && syncSql.trim()" class="flex items-center gap-2">
         <span v-if="executing" class="text-xs text-muted-foreground mr-auto">
