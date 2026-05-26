@@ -259,6 +259,51 @@ const SQL_KEYWORDS = [
   "CRC32",
 ];
 
+// Keywords that appear in nearly every SQL query — boosted so frequency beats length tie-breaking.
+// E.g. typing "WH" should rank WHERE (high frequency) above WHEN (CASE-only).
+const HIGH_FREQUENCY_KEYWORDS = new Set([
+  "SELECT",
+  "FROM",
+  "WHERE",
+  "AND",
+  "OR",
+  "JOIN",
+  "ON",
+  "IN",
+  "AS",
+  "GROUP BY",
+  "ORDER BY",
+  "LEFT",
+  "RIGHT",
+  "INNER",
+  "OUTER",
+  "INSERT",
+  "INTO",
+  "VALUES",
+  "UPDATE",
+  "SET",
+  "DELETE",
+  "NOT",
+  "NULL",
+  "IS",
+  "LIKE",
+  "DISTINCT",
+  "HAVING",
+  "LIMIT",
+  "COUNT",
+  "SUM",
+  "AVG",
+  "MAX",
+  "MIN",
+  "CASE",
+  "UNION",
+  "ALL",
+  "ASC",
+  "DESC",
+  "BETWEEN",
+  "EXISTS",
+]);
+
 const TABLE_TRIGGER_KEYWORDS = new Set(["from", "join", "update", "into", "table", "describe", "explain", "apply"]);
 const EXCLUSIVE_TABLE_TRIGGER_KEYWORDS = new Set(["from", "join", "update", "into", "apply"]);
 const JOIN_MODIFIERS = new Set(["left", "right", "inner", "outer", "cross", "full", "natural"]);
@@ -1984,11 +2029,15 @@ function buildKeywordItems(prefix: string, context: SqlCompletionContext): SqlCo
     if (!matchesPrefix(keyword, prefix)) return false;
     if (!showDdl && isDml && (DDL_ONLY_KEYWORDS.has(keyword) || DATA_TYPE_KEYWORDS.has(keyword))) return false;
     return true;
-  }).map((keyword) => ({
-    label: keyword,
-    type: "keyword" as const,
-    boost: computeBoost(keyword, prefix),
-  }));
+  }).map((keyword) => {
+    const base = computeBoost(keyword, prefix);
+    const freqBoost = HIGH_FREQUENCY_KEYWORDS.has(keyword) ? 100 : 0;
+    return {
+      label: keyword,
+      type: "keyword" as const,
+      boost: base + freqBoost,
+    };
+  });
 }
 
 function matchesPrefix(candidate: string, prefix: string): boolean {
