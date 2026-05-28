@@ -45,16 +45,7 @@ import {
   Code2,
   ListFilter,
 } from "lucide-vue-next";
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-  ContextMenuSub,
-  ContextMenuSubTrigger,
-  ContextMenuSubContent,
-} from "@/components/ui/context-menu";
+import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useQueryStore } from "@/stores/queryStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
@@ -1809,416 +1800,424 @@ const showDropInside = computed(
   () => dragState.active && dragState.targetId === props.node.id && dragState.dropPosition === "inside",
 );
 const isDragging = computed(() => dragState.active && dragState.draggedId === props.node.id);
+
+// ---- CustomContextMenu ----
+
+function exportDataSubmenu(): ContextMenuItem {
+  return {
+    label: t("contextMenu.exportData"),
+    icon: Download,
+    children: [
+      { label: "CSV", action: () => exportData("csv") },
+      { label: "JSON", action: () => exportData("json") },
+      { label: "SQL INSERT", action: () => exportData("sql") },
+      { label: "XLSX", action: () => exportDataXlsx() },
+    ],
+  };
+}
+
+function treeItemMenuItems(): ContextMenuItem[] {
+  const node = props.node;
+  const items: ContextMenuItem[] = [];
+
+  // 1. Pin toggle
+  if (canPin.value) {
+    items.push({
+      label: isPinned.value ? t("contextMenu.unpin") : t("contextMenu.pin"),
+      action: togglePin,
+      icon: Pin,
+    });
+    if (hasTypeMenu.value) items.push({ label: "", separator: true });
+  }
+
+  // 2. Connection
+  if (node.type === "connection") {
+    if (!isConnected.value) {
+      items.push({ label: t("contextMenu.openConnection"), action: toggle, icon: Plug });
+    } else {
+      items.push({ label: t("contextMenu.closeConnection"), action: disconnectConnection, icon: Unplug });
+    }
+    items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+    if (canOpenSqlFileExecution.value) {
+      items.push({ label: t("sqlFile.title"), action: openSqlFileExecution, icon: FileCode });
+    }
+    if (canCreateDatabase.value) {
+      items.push({
+        label: isDuckDbConnection.value ? t("contextMenu.createDuckDbFile") : t("contextMenu.createDatabase"),
+        action: openCreateDatabase,
+        icon: Plus,
+      });
+    }
+    items.push({ label: "", separator: true });
+    if (availableGroups.value.length > 0 || currentGroupId.value) {
+      const groupChildren: ContextMenuItem[] = [
+        ...availableGroups.value.map((group: { id: string; name: string }) => ({
+          label: group.name,
+          action: () => moveToGroup(group.id),
+          icon: FolderOpen,
+          disabled: group.id === currentGroupId.value,
+        })),
+      ];
+      if (currentGroupId.value) {
+        groupChildren.push({ label: "", separator: true });
+        groupChildren.push({ label: t("connectionGroup.ungrouped"), action: () => moveToGroup(null) });
+      }
+      groupChildren.push({ label: "", separator: true });
+      groupChildren.push({ label: t("connectionGroup.newGroup"), action: moveToNewGroup, icon: FolderPlus });
+      items.push({ label: t("connectionGroup.moveToGroup"), icon: FolderInput, children: groupChildren });
+    } else {
+      items.push({ label: t("connectionGroup.moveToNewGroup"), action: moveToNewGroup, icon: FolderPlus });
+    }
+    items.push({ label: t("contextMenu.refreshChildren"), action: refresh, icon: RefreshCw });
+    if (canConfigureVisibleDatabases.value) {
+      items.push({
+        label: t("contextMenu.selectVisibleDatabases"),
+        action: openVisibleDatabasesDialog,
+        icon: ListFilter,
+      });
+    }
+    items.push({ label: t("contextMenu.editConnection"), action: editConnection, icon: Pencil });
+    items.push({ label: t("contextMenu.duplicateConnection"), action: duplicateConnection, icon: CopyPlus });
+    items.push({ label: "", separator: true });
+    items.push({
+      label: t("contextMenu.deleteConnection"),
+      action: deleteConnection,
+      icon: Trash2,
+      variant: "destructive" as const,
+    });
+    return items;
+  }
+
+  // 3. Connection Group
+  if (node.type === "connection-group") {
+    items.push({ label: t("toolbar.newConnection"), action: newConnectionInGroup, icon: Plus });
+    items.push({ label: "", separator: true });
+    items.push({ label: t("connectionGroup.renameGroup"), action: startRenameGroup, icon: Pencil });
+    items.push({ label: "", separator: true });
+    items.push({
+      label: t("connectionGroup.deleteGroup"),
+      action: deleteConnectionGroup,
+      icon: Trash2,
+      variant: "destructive" as const,
+    });
+    return items;
+  }
+
+  // 4. Database / Schema
+  if (node.type === "database" || node.type === "schema") {
+    if (canOpenObjectBrowser.value) {
+      items.push({ label: t("contextMenu.openObjectBrowser"), action: openObjectBrowser, icon: TableProperties });
+    }
+    items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+    if (node.type === "database") {
+      if (!isNodeDefaultDatabase.value) {
+        items.push({ label: t("contextMenu.setDefaultDatabase"), action: setNodeAsDefaultDatabase, icon: Database });
+      } else {
+        items.push({ label: t("contextMenu.clearDefaultDatabase"), action: clearNodeDefaultDatabase, icon: Database });
+      }
+    }
+    if (canCreateTable.value) {
+      items.push({ label: t("contextMenu.createTable"), action: createTable, icon: Plus });
+    }
+    if (canCreateSchema.value) {
+      items.push({ label: t("contextMenu.createSchema"), action: openCreateSchemaDialog, icon: Plus });
+    }
+    if (canOpenSqlFileExecution.value) {
+      items.push({ label: t("sqlFile.title"), action: openSqlFileExecution, icon: FileCode });
+    }
+    if (canOpenDiagram.value) {
+      items.push({ label: t("diagram.open"), action: openDiagram, icon: Network });
+    }
+    if (canOpenDatabaseSearch.value) {
+      items.push({ label: t("databaseSearch.open"), action: openDatabaseSearch, icon: Search });
+    }
+    items.push({ label: t("contextMenu.refreshChildren"), action: refresh, icon: RefreshCw });
+    items.push({ label: "", separator: true });
+    items.push({ label: t("transfer.dataTransfer"), action: openTransfer, icon: ArrowRightLeft });
+    items.push({ label: t("diff.title"), action: openSchemaDiff, icon: ArrowRightLeft });
+    items.push({ label: t("dataCompare.title"), action: openDataCompare, icon: ArrowRightLeft });
+    items.push({ label: t("contextMenu.exportDatabase"), action: openDatabaseExport, icon: Download });
+    if (canDropDatabase.value || canDropSchema.value) {
+      items.push({ label: "", separator: true });
+    }
+    if (canDropDatabase.value) {
+      items.push({
+        label: t("contextMenu.dropDatabase"),
+        action: dropDatabase,
+        icon: Trash2,
+        variant: "destructive" as const,
+      });
+    }
+    if (canDropSchema.value) {
+      items.push({
+        label: t("contextMenu.dropSchema"),
+        action: dropSchema,
+        icon: Trash2,
+        variant: "destructive" as const,
+      });
+    }
+    return items;
+  }
+
+  // 5. Redis DB / Mongo DB
+  if (node.type === "redis-db" || node.type === "mongo-db") {
+    items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+    if (!isNodeDefaultDatabase.value) {
+      items.push({ label: t("contextMenu.setDefaultDatabase"), action: setNodeAsDefaultDatabase, icon: Database });
+    } else {
+      items.push({ label: t("contextMenu.clearDefaultDatabase"), action: clearNodeDefaultDatabase, icon: Database });
+    }
+    if (node.type === "redis-db") {
+      items.push({ label: "", separator: true });
+      items.push({ label: t("redis.flushDb"), action: flushRedisDb, icon: Eraser, variant: "destructive" as const });
+    }
+    return items;
+  }
+
+  // 6. Table / View
+  if (node.type === "table" || node.type === "view") {
+    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy });
+    items.push({ label: "", separator: true });
+    items.push({ label: t("contextMenu.viewData"), action: openData, icon: TableProperties });
+    if (node.type === "view") {
+      items.push({ label: t("contextMenu.viewSource"), action: viewObjectSource, icon: Code2 });
+      items.push({ label: t("contextMenu.viewDdl"), action: viewObjectDdl, icon: FileCode });
+    }
+    if (canOpenStructureEditor.value) {
+      items.push({ label: t("contextMenu.editStructure"), action: openStructureEditor, icon: PencilRuler });
+    }
+    if (canRenameObject.value) {
+      items.push({ label: t("contextMenu.renameObject"), action: openRenameObjectDialog, icon: Pencil });
+    }
+    items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+    if (canOpenDiagram.value) {
+      items.push({ label: t("diagram.open"), action: openDiagram, icon: Network });
+    }
+    if (canOpenTableImport.value) {
+      items.push({ label: t("contextMenu.importData"), action: openTableImport, icon: FileUp });
+    }
+    if (isTableNotView.value) {
+      items.push({ label: t("dataCompare.title"), action: openDataCompare, icon: ArrowRightLeft });
+    }
+    items.push({ label: "", separator: true });
+    items.push(exportDataSubmenu());
+    items.push({ label: t("contextMenu.exportDatabase"), action: openDatabaseExport, icon: Download });
+    items.push({ label: t("contextMenu.exportStructure"), action: exportStructure, icon: FileCode });
+    if (isTableNotView.value) {
+      items.push({ label: "", separator: true });
+      items.push({ label: t("contextMenu.duplicateStructure"), action: duplicateStructure, icon: CopyPlus });
+      items.push({ label: "", separator: true });
+      if (supportsTruncate.value) {
+        items.push({
+          label: t("contextMenu.truncateTable"),
+          action: truncateTable,
+          icon: Scissors,
+          variant: "destructive" as const,
+        });
+      }
+      items.push({
+        label: t("contextMenu.emptyTable"),
+        action: emptyTable,
+        icon: Eraser,
+        variant: "destructive" as const,
+      });
+      items.push({
+        label: t("contextMenu.dropTable"),
+        action: dropTable,
+        icon: Trash2,
+        variant: "destructive" as const,
+      });
+    }
+    items.push({ label: "", separator: true });
+    items.push({ label: t("contextMenu.refreshChildren"), action: refresh, icon: RefreshCw });
+    return items;
+  }
+
+  // 7. Column
+  if (node.type === "column") {
+    if (canOpenFieldLineage.value) {
+      items.push({ label: t("lineage.open"), action: openFieldLineage, icon: Network });
+    }
+    return items;
+  }
+
+  // 8. Procedure / Function
+  if (node.type === "procedure" || node.type === "function") {
+    items.push({ label: t("contextMenu.viewSource"), action: viewObjectSource, icon: Code2 });
+    if (canRenameObject.value) {
+      items.push({ label: t("contextMenu.renameObject"), action: openRenameObjectDialog, icon: Pencil });
+    }
+    items.push({ label: "", separator: true });
+    items.push({
+      label: node.type === "procedure" ? t("contextMenu.dropProcedure") : t("contextMenu.dropFunction"),
+      action: requestDropObject,
+      icon: Trash2,
+      variant: "destructive" as const,
+    });
+    return items;
+  }
+
+  // 9. Group Labels (saved-sql-root, saved-sql-folder, group-columns, etc.)
+  if (isGroupLabel(node)) {
+    if (node.type === "saved-sql-root") {
+      items.push({ label: t("savedSql.newFolder"), action: openCreateSavedSqlFolder, icon: FolderPlus });
+    }
+    if (node.type === "saved-sql-folder") {
+      items.push({ label: t("savedSql.renameFolder"), action: openRenameSavedSqlFolder, icon: Pencil });
+      items.push({
+        label: t("savedSql.deleteFolder"),
+        action: deleteSavedSqlFolder,
+        icon: Trash2,
+        variant: "destructive" as const,
+      });
+      items.push({ label: "", separator: true });
+    }
+    if (node.type !== "saved-sql-root" && node.type !== "saved-sql-folder") {
+      items.push({ label: t("contextMenu.refreshChildren"), action: refresh, icon: RefreshCw });
+    }
+    return items;
+  }
+
+  // 10. Saved SQL File
+  if (node.type === "saved-sql-file") {
+    items.push({ label: t("savedSql.open"), action: openSavedSqlFile, icon: FileText });
+    items.push({ label: t("savedSql.renameFile"), action: openRenameSavedSqlFile, icon: Pencil });
+    items.push({ label: "", separator: true });
+    items.push({
+      label: t("savedSql.deleteFile"),
+      action: deleteSavedSqlFile,
+      icon: Trash2,
+      variant: "destructive" as const,
+    });
+    return items;
+  }
+
+  // 11. Universal Copy Name (for all types except connection)
+  if (node.type !== "connection" && hasTypeMenu.value) {
+    items.push({ label: "", separator: true });
+    items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy });
+  }
+
+  return items;
+}
 </script>
 
 <template>
-  <ContextMenu>
-    <ContextMenuTrigger as-child>
-      <div>
+  <CustomContextMenu :items="treeItemMenuItems()" v-slot="{ onContextMenu }">
+    <div @contextmenu="onContextMenu">
+      <div
+        ref="rowRef"
+        class="group flex min-w-0 items-center gap-1.5 py-1 px-2 cursor-pointer hover:bg-accent transition-colors relative outline-none"
+        style="contain: layout style paint"
+        :class="{
+          'ring-1 ring-primary/50 bg-primary/5': showDropInside,
+          'opacity-50': isDragging,
+          'rounded-none': connectionColor && !isSelected,
+          'rounded-sm': !connectionColor && !isSelected,
+          'tree-item-active rounded-md': isSelected,
+        }"
+        :tabindex="isSelected ? 0 : -1"
+        :style="rowStyle"
+        @click="onClick"
+        @dblclick="onDoubleClick"
+        @keydown="onKeydown"
+        @mousedown="isDraggable ? startDrag($event, node.id, node.type) : undefined"
+        @mousemove="isDropTarget ? updateTarget($event, node.id, node.type) : undefined"
+        @mouseleave="clearTarget(node.id)"
+      >
         <div
-          ref="rowRef"
-          class="group flex min-w-0 items-center gap-1.5 py-1 px-2 cursor-pointer hover:bg-accent transition-colors relative outline-none"
-          style="contain: layout style paint"
-          :class="{
-            'ring-1 ring-primary/50 bg-primary/5': showDropInside,
-            'opacity-50': isDragging,
-            'rounded-none': connectionColor && !isSelected,
-            'rounded-sm': !connectionColor && !isSelected,
-            'tree-item-active rounded-md': isSelected,
-          }"
-          :tabindex="isSelected ? 0 : -1"
-          :style="rowStyle"
-          @click="onClick"
-          @dblclick="onDoubleClick"
-          @keydown="onKeydown"
-          @mousedown="isDraggable ? startDrag($event, node.id, node.type) : undefined"
-          @mousemove="isDropTarget ? updateTarget($event, node.id, node.type) : undefined"
-          @mouseleave="clearTarget(node.id)"
-        >
-          <div
-            v-if="showDropBefore"
-            class="absolute right-2 top-0 h-0.5 bg-primary rounded-full pointer-events-none"
-            :style="{ left: paddingLeft }"
-          />
-          <div
-            v-if="showDropAfter"
-            class="absolute right-2 bottom-0 h-0.5 bg-primary rounded-full pointer-events-none"
-            :style="{ left: paddingLeft }"
-          />
-          <template v-if="canExpand">
-            <button
-              type="button"
-              class="-m-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-              @click.stop="toggle"
-            >
-              <Loader2 v-if="node.isLoading" class="w-3.5 h-3.5 animate-spin" />
-              <ChevronDown v-else-if="node.isExpanded" class="w-3.5 h-3.5" />
-              <ChevronRight v-else class="w-3.5 h-3.5" />
-            </button>
-          </template>
-          <span v-else class="w-3.5 h-3.5 shrink-0" />
-          <DatabaseIcon
-            v-if="node.type === 'connection'"
-            :db-type="connectionIconType(node.connectionId)"
-            class="w-3.5 h-3.5 shrink-0"
-          />
-          <component
-            v-else
-            :is="getIconInfo(node)?.icon || Database"
-            class="w-3.5 h-3.5 shrink-0"
-            :class="getIconInfo(node)?.colorClass"
-          />
-          <input
-            v-if="isRenamingGroup"
-            ref="renameInputRef"
-            v-model="renameInput"
-            class="min-w-0 flex-1 truncate bg-transparent border border-primary/50 rounded px-1 outline-none"
-            @blur="finishRenameGroup"
-            @keydown.enter.prevent="finishRenameGroup"
-            @keydown.escape.prevent="isRenamingGroup = false"
-            @click.stop
-          />
-          <Tooltip v-else :disabled="isTooltipDisabled(node)">
-            <TooltipTrigger as-child>
-              <span ref="labelRef" class="min-w-0 flex-1 truncate">{{ visibleLabel(node) }}</span>
-            </TooltipTrigger>
-            <TooltipContent side="right" :side-offset="8">{{ displayLabel(node) }}</TooltipContent>
-          </Tooltip>
-          <span
-            v-if="
-              (node.type === 'group-tables' ||
-                node.type === 'group-views' ||
-                node.type === 'group-procedures' ||
-                node.type === 'group-functions') &&
-              node.objectCount != null
-            "
-            class="text-muted-foreground text-[10px] shrink-0"
-            >{{ node.objectCount }}</span
-          >
-          <Badge v-if="isNodeDefaultDatabase" variant="secondary" class="h-4 px-1.5 text-[10px]">
-            {{ t("editor.defaultDatabase") }}
-          </Badge>
-          <span v-if="columnComment" class="truncate text-muted-foreground/60 text-[10px] max-w-[40%]">{{
-            columnComment
-          }}</span>
-          <span
-            v-if="tableComment && !settingsStore.editorSettings.sidebarHideTableComments"
-            class="truncate text-muted-foreground/60 text-[10px] max-w-[25%] group-hover:hidden"
-            :title="tableComment"
-            >{{ tableComment }}</span
-          >
-          <span
-            v-if="
-              node.type === 'connection' && node.connectionId && connectionStore.connectedIds.has(node.connectionId)
-            "
-            class="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0"
-          />
-          <ConnectionErrorIndicator
-            v-if="node.type === 'connection'"
-            :connection-id="node.connectionId"
-            trigger-class="h-4 w-4"
-          />
+          v-if="showDropBefore"
+          class="absolute right-2 top-0 h-0.5 bg-primary rounded-full pointer-events-none"
+          :style="{ left: paddingLeft }"
+        />
+        <div
+          v-if="showDropAfter"
+          class="absolute right-2 bottom-0 h-0.5 bg-primary rounded-full pointer-events-none"
+          :style="{ left: paddingLeft }"
+        />
+        <template v-if="canExpand">
           <button
-            v-if="canPin"
-            class="rounded p-0.5 text-muted-foreground hover:bg-muted-foreground/15 hover:text-foreground focus:opacity-100"
-            :class="isPinned ? 'opacity-100 text-primary' : 'opacity-0 group-hover:opacity-100'"
-            :title="isPinned ? t('contextMenu.unpin') : t('contextMenu.pin')"
-            @click.stop="togglePin"
+            type="button"
+            class="-m-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+            @click.stop="toggle"
           >
-            <Pin class="w-3 h-3" :class="{ 'fill-current': isPinned }" />
+            <Loader2 v-if="node.isLoading" class="w-3.5 h-3.5 animate-spin" />
+            <ChevronDown v-else-if="node.isExpanded" class="w-3.5 h-3.5" />
+            <ChevronRight v-else class="w-3.5 h-3.5" />
           </button>
-        </div>
+        </template>
+        <span v-else class="w-3.5 h-3.5 shrink-0" />
+        <DatabaseIcon
+          v-if="node.type === 'connection'"
+          :db-type="connectionIconType(node.connectionId)"
+          class="w-3.5 h-3.5 shrink-0"
+        />
+        <component
+          v-else
+          :is="getIconInfo(node)?.icon || Database"
+          class="w-3.5 h-3.5 shrink-0"
+          :class="getIconInfo(node)?.colorClass"
+        />
+        <input
+          v-if="isRenamingGroup"
+          ref="renameInputRef"
+          v-model="renameInput"
+          class="min-w-0 flex-1 truncate bg-transparent border border-primary/50 rounded px-1 outline-none"
+          @blur="finishRenameGroup"
+          @keydown.enter.prevent="finishRenameGroup"
+          @keydown.escape.prevent="isRenamingGroup = false"
+          @click.stop
+        />
+        <Tooltip v-else :disabled="isTooltipDisabled(node)">
+          <TooltipTrigger as-child>
+            <span ref="labelRef" class="min-w-0 flex-1 truncate">{{ visibleLabel(node) }}</span>
+          </TooltipTrigger>
+          <TooltipContent side="right" :side-offset="8">{{ displayLabel(node) }}</TooltipContent>
+        </Tooltip>
+        <span
+          v-if="
+            (node.type === 'group-tables' ||
+              node.type === 'group-views' ||
+              node.type === 'group-procedures' ||
+              node.type === 'group-functions') &&
+            node.objectCount != null
+          "
+          class="text-muted-foreground text-[10px] shrink-0"
+          >{{ node.objectCount }}</span
+        >
+        <Badge v-if="isNodeDefaultDatabase" variant="secondary" class="h-4 px-1.5 text-[10px]">
+          {{ t("editor.defaultDatabase") }}
+        </Badge>
+        <span v-if="columnComment" class="truncate text-muted-foreground/60 text-[10px] max-w-[40%]">{{
+          columnComment
+        }}</span>
+        <span
+          v-if="tableComment && !settingsStore.editorSettings.sidebarHideTableComments"
+          class="truncate text-muted-foreground/60 text-[10px] max-w-[25%] group-hover:hidden"
+          :title="tableComment"
+          >{{ tableComment }}</span
+        >
+        <span
+          v-if="node.type === 'connection' && node.connectionId && connectionStore.connectedIds.has(node.connectionId)"
+          class="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0"
+        />
+        <ConnectionErrorIndicator
+          v-if="node.type === 'connection'"
+          :connection-id="node.connectionId"
+          trigger-class="h-4 w-4"
+        />
+        <button
+          v-if="canPin"
+          class="rounded p-0.5 text-muted-foreground hover:bg-muted-foreground/15 hover:text-foreground focus:opacity-100"
+          :class="isPinned ? 'opacity-100 text-primary' : 'opacity-0 group-hover:opacity-100'"
+          :title="isPinned ? t('contextMenu.unpin') : t('contextMenu.pin')"
+          @click.stop="togglePin"
+        >
+          <Pin class="w-3 h-3" :class="{ 'fill-current': isPinned }" />
+        </button>
       </div>
-    </ContextMenuTrigger>
-
-    <ContextMenuContent class="w-auto min-w-36" @close-auto-focus="onContextMenuCloseAutoFocus">
-      <ContextMenuItem v-if="canPin" @click="togglePin">
-        <Pin class="w-4 h-4" :class="{ 'fill-current': isPinned }" />
-        {{ isPinned ? t("contextMenu.unpin") : t("contextMenu.pin") }}
-      </ContextMenuItem>
-      <ContextMenuSeparator v-if="canPin && hasTypeMenu" />
-
-      <template v-if="node.type === 'connection'">
-        <ContextMenuItem v-if="!isConnected" @click="toggle">
-          <Plug class="w-4 h-4" /> {{ t("contextMenu.openConnection") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-else @click="disconnectConnection">
-          <Unplug class="w-4 h-4" /> {{ t("contextMenu.closeConnection") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="newQuery">
-          <TerminalSquare class="w-4 h-4" /> {{ t("contextMenu.newQuery") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canOpenSqlFileExecution" @click="openSqlFileExecution">
-          <FileCode class="w-4 h-4" /> {{ t("sqlFile.title") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canCreateDatabase" @click="openCreateDatabase">
-          <Plus class="w-4 h-4" />
-          {{ isDuckDbConnection ? t("contextMenu.createDuckDbFile") : t("contextMenu.createDatabase") }}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuSub v-if="availableGroups.length > 0 || currentGroupId">
-          <ContextMenuSubTrigger>
-            <FolderInput class="w-4 h-4" /> {{ t("connectionGroup.moveToGroup") }}
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            <ContextMenuItem
-              v-for="group in availableGroups"
-              :key="group.id"
-              :disabled="group.id === currentGroupId"
-              @click="moveToGroup(group.id)"
-            >
-              <FolderOpen class="w-4 h-4" /> {{ group.name }}
-            </ContextMenuItem>
-            <ContextMenuSeparator v-if="currentGroupId" />
-            <ContextMenuItem v-if="currentGroupId" @click="moveToGroup(null)">
-              {{ t("connectionGroup.ungrouped") }}
-            </ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem @click="moveToNewGroup">
-              <FolderPlus class="w-4 h-4" /> {{ t("connectionGroup.newGroup") }}
-            </ContextMenuItem>
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-        <ContextMenuItem v-else @click="moveToNewGroup">
-          <FolderPlus class="w-4 h-4" /> {{ t("connectionGroup.moveToNewGroup") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="refresh">
-          <RefreshCw class="w-4 h-4" /> {{ t("contextMenu.refreshChildren") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canConfigureVisibleDatabases" @click="openVisibleDatabasesDialog">
-          <ListFilter class="w-4 h-4" /> {{ t("contextMenu.selectVisibleDatabases") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="editConnection">
-          <Pencil class="w-4 h-4" /> {{ t("contextMenu.editConnection") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="duplicateConnection">
-          <CopyPlus class="w-4 h-4" /> {{ t("contextMenu.duplicateConnection") }}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem class="text-destructive" @click="deleteConnection">
-          <Trash2 class="w-4 h-4" /> {{ t("contextMenu.deleteConnection") }}
-        </ContextMenuItem>
-      </template>
-
-      <template v-if="node.type === 'connection-group'">
-        <ContextMenuItem @click="newConnectionInGroup">
-          <Plus class="w-4 h-4" /> {{ t("toolbar.newConnection") }}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem @select="startRenameGroup">
-          <Pencil class="w-4 h-4" /> {{ t("connectionGroup.renameGroup") }}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem class="text-destructive" @click="deleteConnectionGroup">
-          <Trash2 class="w-4 h-4" /> {{ t("connectionGroup.deleteGroup") }}
-        </ContextMenuItem>
-      </template>
-
-      <template v-if="node.type === 'database' || node.type === 'schema'">
-        <ContextMenuItem v-if="canOpenObjectBrowser" @click="openObjectBrowser">
-          <TableProperties class="w-4 h-4" /> {{ t("contextMenu.openObjectBrowser") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="newQuery">
-          <TerminalSquare class="w-4 h-4" /> {{ t("contextMenu.newQuery") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="node.type === 'database' && !isNodeDefaultDatabase" @click="setNodeAsDefaultDatabase">
-          <Database class="w-4 h-4" /> {{ t("contextMenu.setDefaultDatabase") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="node.type === 'database' && isNodeDefaultDatabase" @click="clearNodeDefaultDatabase">
-          <Database class="w-4 h-4" /> {{ t("contextMenu.clearDefaultDatabase") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canCreateTable" @click="createTable">
-          <Plus class="w-4 h-4" /> {{ t("contextMenu.createTable") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canCreateSchema" @click="openCreateSchemaDialog">
-          <Plus class="w-4 h-4" /> {{ t("contextMenu.createSchema") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canOpenSqlFileExecution" @click="openSqlFileExecution">
-          <FileCode class="w-4 h-4" /> {{ t("sqlFile.title") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canOpenDiagram" @click="openDiagram">
-          <Network class="w-4 h-4" /> {{ t("diagram.open") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canOpenDatabaseSearch" @click="openDatabaseSearch">
-          <Search class="w-4 h-4" /> {{ t("databaseSearch.open") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="refresh">
-          <RefreshCw class="w-4 h-4" /> {{ t("contextMenu.refreshChildren") }}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem @click="openTransfer">
-          <ArrowRightLeft class="w-4 h-4" /> {{ t("transfer.dataTransfer") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="openSchemaDiff">
-          <ArrowRightLeft class="w-4 h-4" /> {{ t("diff.title") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="openDataCompare">
-          <ArrowRightLeft class="w-4 h-4" /> {{ t("dataCompare.title") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="openDatabaseExport">
-          <Download class="w-4 h-4" />
-          {{ t("contextMenu.exportDatabase") }}
-        </ContextMenuItem>
-        <template v-if="canDropDatabase || canDropSchema">
-          <ContextMenuSeparator />
-          <ContextMenuItem v-if="canDropDatabase" class="text-destructive" @click="dropDatabase">
-            <Trash2 class="w-4 h-4" /> {{ t("contextMenu.dropDatabase") }}
-          </ContextMenuItem>
-          <ContextMenuItem v-if="canDropSchema" class="text-destructive" @click="dropSchema">
-            <Trash2 class="w-4 h-4" /> {{ t("contextMenu.dropSchema") }}
-          </ContextMenuItem>
-        </template>
-      </template>
-
-      <template v-if="node.type === 'redis-db' || node.type === 'mongo-db'">
-        <ContextMenuItem @click="newQuery">
-          <TerminalSquare class="w-4 h-4" /> {{ t("contextMenu.newQuery") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="!isNodeDefaultDatabase" @click="setNodeAsDefaultDatabase">
-          <Database class="w-4 h-4" /> {{ t("contextMenu.setDefaultDatabase") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="isNodeDefaultDatabase" @click="clearNodeDefaultDatabase">
-          <Database class="w-4 h-4" /> {{ t("contextMenu.clearDefaultDatabase") }}
-        </ContextMenuItem>
-        <template v-if="node.type === 'redis-db'">
-          <ContextMenuSeparator />
-          <ContextMenuItem class="text-destructive" @click="flushRedisDb">
-            <Eraser class="w-4 h-4" /> {{ t("redis.flushDb") }}
-          </ContextMenuItem>
-        </template>
-      </template>
-
-      <template v-if="node.type === 'table' || node.type === 'view'">
-        <ContextMenuItem @click="copyName"> <Copy class="w-4 h-4" /> {{ t("contextMenu.copyName") }} </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem @click="openData">
-          <TableProperties class="w-4 h-4" /> {{ t("contextMenu.viewData") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="node.type === 'view'" @click="viewObjectSource">
-          <Code2 class="w-4 h-4" /> {{ t("contextMenu.viewSource") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="node.type === 'view'" @click="viewObjectDdl">
-          <FileCode class="w-4 h-4" /> {{ t("contextMenu.viewDdl") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canOpenStructureEditor" @click="openStructureEditor">
-          <PencilRuler class="w-4 h-4" /> {{ t("contextMenu.editStructure") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canRenameObject" @click="openRenameObjectDialog">
-          <Pencil class="w-4 h-4" /> {{ t("contextMenu.renameObject") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="newQuery">
-          <TerminalSquare class="w-4 h-4" /> {{ t("contextMenu.newQuery") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canOpenDiagram" @click="openDiagram">
-          <Network class="w-4 h-4" /> {{ t("diagram.open") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canOpenTableImport" @click="openTableImport">
-          <FileUp class="w-4 h-4" /> {{ t("contextMenu.importData") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="isTableNotView" @click="openDataCompare">
-          <ArrowRightLeft class="w-4 h-4" /> {{ t("dataCompare.title") }}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuSub>
-          <ContextMenuSubTrigger>
-            <Download class="w-4 h-4" /> {{ t("contextMenu.exportData") }}
-          </ContextMenuSubTrigger>
-          <ContextMenuSubContent>
-            <ContextMenuItem @click="exportData('csv')">CSV</ContextMenuItem>
-            <ContextMenuItem @click="exportData('json')">JSON</ContextMenuItem>
-            <ContextMenuItem @click="exportData('sql')">SQL INSERT</ContextMenuItem>
-            <ContextMenuItem @click="exportDataXlsx">XLSX</ContextMenuItem>
-          </ContextMenuSubContent>
-        </ContextMenuSub>
-        <ContextMenuItem @click="openDatabaseExport">
-          <Download class="w-4 h-4" />
-          {{ t("contextMenu.exportDatabase") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="exportStructure">
-          <FileCode class="w-4 h-4" /> {{ t("contextMenu.exportStructure") }}
-        </ContextMenuItem>
-        <template v-if="isTableNotView">
-          <ContextMenuSeparator />
-          <ContextMenuItem @click="duplicateStructure">
-            <CopyPlus class="w-4 h-4" /> {{ t("contextMenu.duplicateStructure") }}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem v-if="supportsTruncate" class="text-destructive" @click="truncateTable">
-            <Scissors class="w-4 h-4" /> {{ t("contextMenu.truncateTable") }}
-          </ContextMenuItem>
-          <ContextMenuItem class="text-destructive" @click="emptyTable">
-            <Eraser class="w-4 h-4" /> {{ t("contextMenu.emptyTable") }}
-          </ContextMenuItem>
-          <ContextMenuItem class="text-destructive" @click="dropTable">
-            <Trash2 class="w-4 h-4" /> {{ t("contextMenu.dropTable") }}
-          </ContextMenuItem>
-        </template>
-        <ContextMenuSeparator />
-        <ContextMenuItem @click="refresh">
-          <RefreshCw class="w-4 h-4" /> {{ t("contextMenu.refreshChildren") }}
-        </ContextMenuItem>
-      </template>
-
-      <template v-if="node.type === 'column'">
-        <ContextMenuItem v-if="canOpenFieldLineage" @click="openFieldLineage">
-          <Network class="w-4 h-4" /> {{ t("lineage.open") }}
-        </ContextMenuItem>
-      </template>
-
-      <template v-if="node.type === 'procedure' || node.type === 'function'">
-        <ContextMenuItem @click="viewObjectSource">
-          <Code2 class="w-4 h-4 mr-2" />
-          {{ t("contextMenu.viewSource") }}
-        </ContextMenuItem>
-        <ContextMenuItem v-if="canRenameObject" @click="openRenameObjectDialog">
-          <Pencil class="w-4 h-4 mr-2" />
-          {{ t("contextMenu.renameObject") }}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem class="text-destructive" @click="requestDropObject">
-          <Trash2 class="w-4 h-4 mr-2" />
-          {{ node.type === "procedure" ? t("contextMenu.dropProcedure") : t("contextMenu.dropFunction") }}
-        </ContextMenuItem>
-      </template>
-
-      <template v-if="isGroupLabel(node)">
-        <ContextMenuItem v-if="node.type === 'saved-sql-root'" @click="openCreateSavedSqlFolder">
-          <FolderPlus class="w-4 h-4" /> {{ t("savedSql.newFolder") }}
-        </ContextMenuItem>
-        <template v-if="node.type === 'saved-sql-folder'">
-          <ContextMenuItem @click="openRenameSavedSqlFolder">
-            <Pencil class="w-4 h-4" /> {{ t("savedSql.renameFolder") }}
-          </ContextMenuItem>
-          <ContextMenuItem class="text-destructive" @click="deleteSavedSqlFolder">
-            <Trash2 class="w-4 h-4" /> {{ t("savedSql.deleteFolder") }}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-        </template>
-        <ContextMenuItem v-if="node.type !== 'saved-sql-root' && node.type !== 'saved-sql-folder'" @click="refresh">
-          <RefreshCw class="w-4 h-4" /> {{ t("contextMenu.refreshChildren") }}
-        </ContextMenuItem>
-      </template>
-
-      <template v-if="node.type === 'saved-sql-file'">
-        <ContextMenuItem @click="openSavedSqlFile">
-          <FileText class="w-4 h-4" /> {{ t("savedSql.open") }}
-        </ContextMenuItem>
-        <ContextMenuItem @click="openRenameSavedSqlFile">
-          <Pencil class="w-4 h-4" /> {{ t("savedSql.renameFile") }}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem class="text-destructive" @click="deleteSavedSqlFile">
-          <Trash2 class="w-4 h-4" /> {{ t("savedSql.deleteFile") }}
-        </ContextMenuItem>
-      </template>
-
-      <template v-if="node.type !== 'connection'">
-        <ContextMenuSeparator v-if="hasTypeMenu" />
-        <ContextMenuItem @click="copyName"> <Copy class="w-4 h-4" /> {{ t("contextMenu.copyName") }} </ContextMenuItem>
-      </template>
-    </ContextMenuContent>
-  </ContextMenu>
-
+    </div>
+  </CustomContextMenu>
   <VisibleDatabasesDialog
     v-if="node.type === 'connection' && node.connectionId"
     v-model:open="showVisibleDatabasesDialog"

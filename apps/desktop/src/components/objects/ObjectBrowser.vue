@@ -35,16 +35,7 @@ import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuSub,
-  ContextMenuSubContent,
-  ContextMenuSubTrigger,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import DangerConfirmDialog from "@/components/editor/DangerConfirmDialog.vue";
 import * as api from "@/lib/api";
 import type { ConnectionConfig, ObjectInfo, ObjectSourceKind } from "@/types/database";
@@ -1033,6 +1024,120 @@ watch(
   },
   { immediate: true },
 );
+
+// ---- CustomContextMenu helpers ----
+
+function exportDataSubmenu(item: ObjectBrowserRow): ContextMenuItem {
+  return {
+    label: t("contextMenu.exportData"),
+    icon: Download,
+    children: [
+      { label: "CSV", action: () => exportData(item, "csv") },
+      { label: "JSON", action: () => exportData(item, "json") },
+      { label: "SQL INSERT", action: () => exportData(item, "sql") },
+      { label: "XLSX", action: () => exportDataXlsx(item) },
+    ],
+  };
+}
+
+function getTableMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
+  return [
+    { label: t("contextMenu.viewData"), action: () => openRow(item), icon: Table2 },
+    ...(canOpenStructureEditor.value
+      ? [{ label: t("contextMenu.editStructure"), action: () => openStructureEditor(item), icon: PencilRuler }]
+      : []),
+    ...(canRename(item)
+      ? [{ label: t("contextMenu.renameObject"), action: () => requestRename(item), icon: Pencil }]
+      : []),
+    { label: t("contextMenu.newQuery"), action: () => openNewQuery(item), icon: TerminalSquare },
+    ...(canOpenDiagram.value ? [{ label: t("diagram.open"), action: () => openDiagram(item), icon: Network }] : []),
+    ...(canOpenTableImport.value
+      ? [{ label: t("contextMenu.importData"), action: () => openTableImport(item), icon: FileUp }]
+      : []),
+    { label: t("dataCompare.title"), action: () => openDataCompare(item), icon: ArrowRightLeft },
+    { label: "", separator: true },
+    exportDataSubmenu(item),
+    { label: t("contextMenu.exportDatabase"), action: () => openDatabaseExport(item), icon: Download },
+    { label: t("contextMenu.exportStructure"), action: () => exportStructure(item), icon: FileCode },
+    { label: "", separator: true },
+    { label: t("contextMenu.duplicateStructure"), action: () => requestDuplicateStructure(item), icon: CopyPlus },
+    { label: "", separator: true },
+    ...(supportsTruncateTable.value
+      ? [
+          {
+            label: t("contextMenu.truncateTable"),
+            action: () => requestTruncateTable(item),
+            icon: Scissors,
+            variant: "destructive" as const,
+          },
+        ]
+      : []),
+    {
+      label: t("contextMenu.emptyTable"),
+      action: () => requestEmptyTable(item),
+      icon: Eraser,
+      variant: "destructive" as const,
+    },
+    {
+      label: t("contextMenu.dropTable"),
+      action: () => requestDrop(item),
+      icon: Trash2,
+      variant: "destructive" as const,
+    },
+    { label: "", separator: true },
+    { label: t("contextMenu.copyName"), action: () => copyName(item), icon: Copy },
+  ];
+}
+
+function getViewMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
+  return [
+    { label: t("contextMenu.viewData"), action: () => openViewData(item), icon: Table2 },
+    { label: t("contextMenu.viewSource"), action: () => openSource(item), icon: Code2 },
+    { label: t("contextMenu.viewDdl"), action: () => openViewDdl(item), icon: ScrollText },
+    ...(canRename(item)
+      ? [{ label: t("contextMenu.renameObject"), action: () => requestRename(item), icon: Pencil }]
+      : []),
+    { label: t("contextMenu.newQuery"), action: () => openNewQuery(item), icon: TerminalSquare },
+    ...(canOpenDiagram.value ? [{ label: t("diagram.open"), action: () => openDiagram(item), icon: Network }] : []),
+    { label: "", separator: true },
+    exportDataSubmenu(item),
+    { label: t("contextMenu.exportDatabase"), action: () => openDatabaseExport(item), icon: Download },
+    { label: t("contextMenu.exportStructure"), action: () => exportStructure(item), icon: FileCode },
+    { label: "", separator: true },
+    {
+      label: t("contextMenu.dropView"),
+      action: () => requestDrop(item),
+      icon: Trash2,
+      variant: "destructive" as const,
+    },
+    { label: "", separator: true },
+    { label: t("contextMenu.copyName"), action: () => copyName(item), icon: Copy },
+  ];
+}
+
+function getProcFuncMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
+  return [
+    { label: t("contextMenu.viewSource"), action: () => openSource(item), icon: Code2 },
+    ...(canRename(item)
+      ? [{ label: t("contextMenu.renameObject"), action: () => requestRename(item), icon: Pencil }]
+      : []),
+    { label: "", separator: true },
+    {
+      label: item.type === "PROCEDURE" ? t("contextMenu.dropProcedure") : t("contextMenu.dropFunction"),
+      action: () => requestDrop(item),
+      icon: Trash2,
+      variant: "destructive" as const,
+    },
+    { label: "", separator: true },
+    { label: t("contextMenu.copyName"), action: () => copyName(item), icon: Copy },
+  ];
+}
+
+function getObjectBrowserMenuItems(item: ObjectBrowserRow): ContextMenuItem[] {
+  if (item.type === "TABLE") return getTableMenuItems(item);
+  if (item.type === "VIEW") return getViewMenuItems(item);
+  return getProcFuncMenuItems(item);
+}
 </script>
 
 <template>
@@ -1179,182 +1284,50 @@ watch(
         key-field="id"
       >
         <template #default="{ item }">
-          <ContextMenu>
-            <ContextMenuTrigger as-child>
-              <div
-                class="grid h-[38px] cursor-pointer items-center gap-3 border-b px-3 hover:bg-accent/50"
-                :class="{
-                  'bg-accent/40': sourceRow?.id === item.id,
-                  'bg-primary/5': selectedTableIds.has(item.id),
-                }"
-                :style="{ gridTemplateColumns }"
-                @click="onRowClick(item, $event)"
+          <CustomContextMenu :items="getObjectBrowserMenuItems(item)" v-slot="{ onContextMenu }">
+            <div
+              class="grid h-[38px] cursor-pointer items-center gap-3 border-b px-3 hover:bg-accent/50"
+              :class="{
+                'bg-accent/40': sourceRow?.id === item.id,
+                'bg-primary/5': selectedTableIds.has(item.id),
+              }"
+              :style="{ gridTemplateColumns }"
+              @click="onRowClick(item, $event)"
+              @contextmenu="onContextMenu"
+            >
+              <button
+                class="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                type="button"
+                :class="{ invisible: item.type !== 'TABLE' }"
+                @click.stop="toggleTableSelection(item)"
               >
-                <button
-                  class="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-                  type="button"
-                  :class="{ invisible: item.type !== 'TABLE' }"
-                  @click.stop="toggleTableSelection(item)"
-                >
-                  <CheckSquare v-if="selectedTableIds.has(item.id)" class="h-3.5 w-3.5 text-primary" />
-                  <Square v-else class="h-3.5 w-3.5" />
-                </button>
-                <div class="flex min-w-0 items-center gap-2">
-                  <component :is="iconFor(item)" class="h-3.5 w-3.5 shrink-0" :class="iconClass(item.type)" />
-                  <span class="truncate text-[13px] font-medium text-foreground">{{ item.name }}</span>
-                </div>
-                <div class="truncate text-xs text-muted-foreground">{{ typeLabel(item.type) }}</div>
-                <div
-                  v-if="hasCreatedAt"
-                  class="truncate text-xs tabular-nums text-muted-foreground"
-                  :title="formatObjectBrowserTimestamp(item.created_at)"
-                >
-                  {{ formatObjectBrowserTimestamp(item.created_at) }}
-                </div>
-                <div
-                  v-if="hasUpdatedAt"
-                  class="truncate text-xs tabular-nums text-muted-foreground"
-                  :title="formatObjectBrowserTimestamp(item.updated_at)"
-                >
-                  {{ formatObjectBrowserTimestamp(item.updated_at) }}
-                </div>
-                <div v-if="hasComments" class="truncate text-xs text-muted-foreground" :title="item.comment || ''">
-                  {{ item.comment || "" }}
-                </div>
+                <CheckSquare v-if="selectedTableIds.has(item.id)" class="h-3.5 w-3.5 text-primary" />
+                <Square v-else class="h-3.5 w-3.5" />
+              </button>
+              <div class="flex min-w-0 items-center gap-2">
+                <component :is="iconFor(item)" class="h-3.5 w-3.5 shrink-0" :class="iconClass(item.type)" />
+                <span class="truncate text-[13px] font-medium text-foreground">{{ item.name }}</span>
               </div>
-            </ContextMenuTrigger>
-            <ContextMenuContent class="w-auto min-w-40">
-              <!-- TABLE -->
-              <template v-if="item.type === 'TABLE'">
-                <ContextMenuItem @click="openRow(item)">
-                  <Table2 class="w-4 h-4 mr-2" /> {{ t("contextMenu.viewData") }}
-                </ContextMenuItem>
-                <ContextMenuItem v-if="canOpenStructureEditor" @click="openStructureEditor(item)">
-                  <PencilRuler class="w-4 h-4 mr-2" /> {{ t("contextMenu.editStructure") }}
-                </ContextMenuItem>
-                <ContextMenuItem v-if="canRename(item)" @click="requestRename(item)">
-                  <Pencil class="w-4 h-4 mr-2" /> {{ t("contextMenu.renameObject") }}
-                </ContextMenuItem>
-                <ContextMenuItem @click="openNewQuery(item)">
-                  <TerminalSquare class="w-4 h-4 mr-2" /> {{ t("contextMenu.newQuery") }}
-                </ContextMenuItem>
-                <ContextMenuItem v-if="canOpenDiagram" @click="openDiagram(item)">
-                  <Network class="w-4 h-4 mr-2" /> {{ t("diagram.open") }}
-                </ContextMenuItem>
-                <ContextMenuItem v-if="canOpenTableImport" @click="openTableImport(item)">
-                  <FileUp class="w-4 h-4 mr-2" /> {{ t("contextMenu.importData") }}
-                </ContextMenuItem>
-                <ContextMenuItem @click="openDataCompare(item)">
-                  <ArrowRightLeft class="w-4 h-4 mr-2" /> {{ t("dataCompare.title") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuSub>
-                  <ContextMenuSubTrigger>
-                    <Download class="w-4 h-4 mr-2" /> {{ t("contextMenu.exportData") }}
-                  </ContextMenuSubTrigger>
-                  <ContextMenuSubContent>
-                    <ContextMenuItem @click="exportData(item, 'csv')">CSV</ContextMenuItem>
-                    <ContextMenuItem @click="exportData(item, 'json')">JSON</ContextMenuItem>
-                    <ContextMenuItem @click="exportData(item, 'sql')">SQL INSERT</ContextMenuItem>
-                    <ContextMenuItem @click="exportDataXlsx(item)">XLSX</ContextMenuItem>
-                  </ContextMenuSubContent>
-                </ContextMenuSub>
-                <ContextMenuItem @click="openDatabaseExport(item)">
-                  <Download class="w-4 h-4 mr-2" /> {{ t("contextMenu.exportDatabase") }}
-                </ContextMenuItem>
-                <ContextMenuItem @click="exportStructure(item)">
-                  <FileCode class="w-4 h-4 mr-2" /> {{ t("contextMenu.exportStructure") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem @click="requestDuplicateStructure(item)">
-                  <CopyPlus class="w-4 h-4 mr-2" /> {{ t("contextMenu.duplicateStructure") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem
-                  v-if="supportsTruncateTable"
-                  class="text-destructive"
-                  @click="requestTruncateTable(item)"
-                >
-                  <Scissors class="w-4 h-4 mr-2" /> {{ t("contextMenu.truncateTable") }}
-                </ContextMenuItem>
-                <ContextMenuItem class="text-destructive" @click="requestEmptyTable(item)">
-                  <Eraser class="w-4 h-4 mr-2" /> {{ t("contextMenu.emptyTable") }}
-                </ContextMenuItem>
-                <ContextMenuItem class="text-destructive" @click="requestDrop(item)">
-                  <Trash2 class="w-4 h-4 mr-2" /> {{ t("contextMenu.dropTable") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem @click="copyName(item)">
-                  <Copy class="w-4 h-4 mr-2" /> {{ t("contextMenu.copyName") }}
-                </ContextMenuItem>
-              </template>
-              <!-- VIEW -->
-              <template v-else-if="item.type === 'VIEW'">
-                <ContextMenuItem @click="openViewData(item)">
-                  <Table2 class="w-4 h-4 mr-2" /> {{ t("contextMenu.viewData") }}
-                </ContextMenuItem>
-                <ContextMenuItem @click="openSource(item)">
-                  <Code2 class="w-4 h-4 mr-2" /> {{ t("contextMenu.viewSource") }}
-                </ContextMenuItem>
-                <ContextMenuItem @click="openViewDdl(item)">
-                  <ScrollText class="w-4 h-4 mr-2" /> {{ t("contextMenu.viewDdl") }}
-                </ContextMenuItem>
-                <ContextMenuItem v-if="canRename(item)" @click="requestRename(item)">
-                  <Pencil class="w-4 h-4 mr-2" /> {{ t("contextMenu.renameObject") }}
-                </ContextMenuItem>
-                <ContextMenuItem @click="openNewQuery(item)">
-                  <TerminalSquare class="w-4 h-4 mr-2" /> {{ t("contextMenu.newQuery") }}
-                </ContextMenuItem>
-                <ContextMenuItem v-if="canOpenDiagram" @click="openDiagram(item)">
-                  <Network class="w-4 h-4 mr-2" /> {{ t("diagram.open") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuSub>
-                  <ContextMenuSubTrigger>
-                    <Download class="w-4 h-4 mr-2" /> {{ t("contextMenu.exportData") }}
-                  </ContextMenuSubTrigger>
-                  <ContextMenuSubContent>
-                    <ContextMenuItem @click="exportData(item, 'csv')">CSV</ContextMenuItem>
-                    <ContextMenuItem @click="exportData(item, 'json')">JSON</ContextMenuItem>
-                    <ContextMenuItem @click="exportData(item, 'sql')">SQL INSERT</ContextMenuItem>
-                    <ContextMenuItem @click="exportDataXlsx(item)">XLSX</ContextMenuItem>
-                  </ContextMenuSubContent>
-                </ContextMenuSub>
-                <ContextMenuItem @click="openDatabaseExport(item)">
-                  <Download class="w-4 h-4 mr-2" /> {{ t("contextMenu.exportDatabase") }}
-                </ContextMenuItem>
-                <ContextMenuItem @click="exportStructure(item)">
-                  <FileCode class="w-4 h-4 mr-2" /> {{ t("contextMenu.exportStructure") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem class="text-destructive" @click="requestDrop(item)">
-                  <Trash2 class="w-4 h-4 mr-2" /> {{ t("contextMenu.dropView") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem @click="copyName(item)">
-                  <Copy class="w-4 h-4 mr-2" /> {{ t("contextMenu.copyName") }}
-                </ContextMenuItem>
-              </template>
-              <!-- PROCEDURE / FUNCTION -->
-              <template v-else>
-                <ContextMenuItem @click="openSource(item)">
-                  <Code2 class="w-4 h-4 mr-2" /> {{ t("contextMenu.viewSource") }}
-                </ContextMenuItem>
-                <ContextMenuItem v-if="canRename(item)" @click="requestRename(item)">
-                  <Pencil class="w-4 h-4 mr-2" /> {{ t("contextMenu.renameObject") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem class="text-destructive" @click="requestDrop(item)">
-                  <Trash2 class="w-4 h-4 mr-2" />
-                  {{ item.type === "PROCEDURE" ? t("contextMenu.dropProcedure") : t("contextMenu.dropFunction") }}
-                </ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem @click="copyName(item)">
-                  <Copy class="w-4 h-4 mr-2" /> {{ t("contextMenu.copyName") }}
-                </ContextMenuItem>
-              </template>
-            </ContextMenuContent>
-          </ContextMenu>
+              <div class="truncate text-xs text-muted-foreground">{{ typeLabel(item.type) }}</div>
+              <div
+                v-if="hasCreatedAt"
+                class="truncate text-xs tabular-nums text-muted-foreground"
+                :title="formatObjectBrowserTimestamp(item.created_at)"
+              >
+                {{ formatObjectBrowserTimestamp(item.created_at) }}
+              </div>
+              <div
+                v-if="hasUpdatedAt"
+                class="truncate text-xs tabular-nums text-muted-foreground"
+                :title="formatObjectBrowserTimestamp(item.updated_at)"
+              >
+                {{ formatObjectBrowserTimestamp(item.updated_at) }}
+              </div>
+              <div v-if="hasComments" class="truncate text-xs text-muted-foreground" :title="item.comment || ''">
+                {{ item.comment || "" }}
+              </div>
+            </div>
+          </CustomContextMenu>
         </template>
       </RecycleScroller>
       <div v-if="sourceRow" class="flex h-[42%] min-h-44 shrink-0 flex-col border-t bg-background">

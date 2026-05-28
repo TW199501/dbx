@@ -3,13 +3,7 @@ import { computed, ref, watch, nextTick } from "vue";
 import type { CSSProperties } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Pin, ChevronDown, Table2, Code2, TableProperties, PencilRuler, Package, Check } from "lucide-vue-next";
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,6 +40,38 @@ const compactTabTitle = computed({
 
 function toggleCompactTabTitle() {
   compactTabTitle.value = !compactTabTitle.value;
+}
+
+function getTabMenuItems(tab: QueryTab): ContextMenuItem[] {
+  return [
+    {
+      label: t("contextMenu.compactTabTitle"),
+      action: toggleCompactTabTitle,
+      icon: Check,
+      iconClass: compactTabTitle.value ? "opacity-100" : "opacity-0",
+    },
+    { label: "", separator: true },
+    {
+      label: tab.pinned ? t("contextMenu.unpin") : t("contextMenu.pin"),
+      action: () => queryStore.togglePinnedTab(tab.id),
+      icon: Pin,
+      iconClass: tab.pinned ? "fill-current" : "",
+    },
+    { label: "", separator: true },
+    { label: t("contextMenu.closeTab"), action: () => queryStore.closeTab(tab.id), icon: X },
+    {
+      label: t("contextMenu.closeOtherTabs"),
+      action: () => queryStore.closeOtherTabs(tab.id),
+      disabled: queryStore.tabs.length <= 1,
+      icon: X,
+    },
+    {
+      label: t("contextMenu.closeAllTabs"),
+      action: () => queryStore.closeAllTabs(),
+      variant: "destructive" as const,
+      icon: X,
+    },
+  ];
 }
 
 const tabsContainerRef = ref<HTMLElement | null>(null);
@@ -172,8 +198,13 @@ const dataTabsMenuContainerClass = computed(() =>
       :style="tabsContainerStyle"
       @scroll="updateScrollButtons"
     >
-      <ContextMenu v-for="tab in queryStore.tabs" :key="tab.id">
-        <ContextMenuTrigger :class="settingsStore.editorSettings.appLayout === 'classic' ? 'h-full' : ''">
+      <CustomContextMenu
+        v-for="tab in queryStore.tabs"
+        :key="tab.id"
+        :items="getTabMenuItems(tab)"
+        v-slot="{ onContextMenu }"
+      >
+        <div :class="settingsStore.editorSettings.appLayout === 'classic' ? 'h-full' : ''" @contextmenu="onContextMenu">
           <Tooltip>
             <TooltipTrigger as-child>
               <div
@@ -237,33 +268,8 @@ const dataTabsMenuContainerClass = computed(() =>
               </template>
             </TooltipContent>
           </Tooltip>
-        </ContextMenuTrigger>
-
-        <ContextMenuContent class="w-44">
-          <ContextMenuItem @click="toggleCompactTabTitle">
-            <Check class="w-3.5 h-3.5 mr-2" :class="compactTabTitle ? 'opacity-100' : 'opacity-0'" />
-            {{ t("contextMenu.compactTabTitle") }}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem @click="queryStore.togglePinnedTab(tab.id)">
-            <Pin class="w-3.5 h-3.5 mr-2" :class="{ 'fill-current': tab.pinned }" />
-            {{ tab.pinned ? t("contextMenu.unpin") : t("contextMenu.pin") }}
-          </ContextMenuItem>
-          <ContextMenuSeparator />
-          <ContextMenuItem @click="queryStore.closeTab(tab.id)">
-            <X class="w-3.5 h-3.5 mr-2" />
-            {{ t("contextMenu.closeTab") }}
-          </ContextMenuItem>
-          <ContextMenuItem :disabled="queryStore.tabs.length <= 1" @click="queryStore.closeOtherTabs(tab.id)">
-            <X class="w-3.5 h-3.5 mr-2" />
-            {{ t("contextMenu.closeOtherTabs") }}
-          </ContextMenuItem>
-          <ContextMenuItem variant="destructive" @click="queryStore.closeAllTabs">
-            <X class="w-3.5 h-3.5 mr-2" />
-            {{ t("contextMenu.closeAllTabs") }}
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
+        </div>
+      </CustomContextMenu>
 
       <!-- Driver Store Tab -->
       <div
