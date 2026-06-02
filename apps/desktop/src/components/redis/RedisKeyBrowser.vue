@@ -13,6 +13,7 @@ import {
   Plus,
   KeyRound,
   TerminalSquare,
+  Asterisk,
 } from "lucide-vue-next";
 import { RecycleScroller } from "vue-virtual-scroller";
 import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
@@ -42,6 +43,7 @@ import { isRedisClearScreenCommand, nextRedisCommandDb, redisKeyTextToRaw } from
 import { formatRedisCommandResult, formatRedisStringValue } from "@/lib/redisValuePresentation";
 import { isCancelSearchShortcut } from "@/lib/keyboardShortcuts";
 import { useEditorFontFamilyStyle } from "@/composables/useEditorFontFamilyStyle";
+import { redisKeySearchPattern } from "@/lib/redisKeyPattern";
 
 const { t } = useI18n();
 const connectionStore = useConnectionStore();
@@ -72,6 +74,7 @@ const rootRef = ref<HTMLElement>();
 const commandTerminalRef = ref<HTMLElement>();
 const searchPattern = ref("");
 const searchMode = ref<RedisSearchMode>("key");
+const fuzzyKeySearch = ref(false);
 const selectedKeyRaw = ref<string | null>(null);
 const hasMore = ref(false);
 const scanCursor = ref(0);
@@ -99,12 +102,18 @@ let redisBrowserIsActive = true;
 let redisDbFlushedListenerRegistered = false;
 
 const valueQuery = computed(() => searchPattern.value.trim());
-const effectivePattern = computed(() => (searchMode.value === "key" ? searchPattern.value.trim() || "*" : "*"));
+const effectivePattern = computed(() =>
+  searchMode.value === "key" ? redisKeySearchPattern(searchPattern.value, fuzzyKeySearch.value) : "*",
+);
 const isSearchMode = computed(() =>
   searchMode.value === "key" ? effectivePattern.value !== "*" : valueQuery.value !== "",
 );
 const searchPlaceholder = computed(() =>
-  searchMode.value === "key" ? t("redis.pattern") : t("redis.valueSearchPlaceholder"),
+  searchMode.value === "key"
+    ? fuzzyKeySearch.value
+      ? t("redis.fuzzyPattern")
+      : t("redis.pattern")
+    : t("redis.valueSearchPlaceholder"),
 );
 const loadingEmptyText = computed(() =>
   searchMode.value === "value" && valueQuery.value ? t("redis.searchingValues") : t("redis.loadingKeys"),
@@ -550,6 +559,11 @@ function setSearchMode(mode: RedisSearchMode) {
   void loadKeys();
 }
 
+function toggleFuzzyKeySearch() {
+  fuzzyKeySearch.value = !fuzzyKeySearch.value;
+  if (searchMode.value === "key") void loadKeys();
+}
+
 function getSearchInput(): HTMLInputElement | null {
   return rootRef.value?.querySelector<HTMLInputElement>("[data-redis-search-input]") ?? null;
 }
@@ -674,6 +688,19 @@ defineExpose({ focusSearch });
               @input="onSearchInput"
               @keydown="onSearchKeydown"
             />
+            <Button
+              v-if="searchMode === 'key'"
+              variant="ghost"
+              size="sm"
+              class="h-6 shrink-0 px-2 text-xs"
+              :class="fuzzyKeySearch ? 'bg-accent text-accent-foreground' : 'text-muted-foreground'"
+              :title="t('redis.fuzzyMatchTitle')"
+              :aria-pressed="fuzzyKeySearch"
+              @click="toggleFuzzyKeySearch"
+            >
+              <Asterisk class="h-3 w-3 mr-1" />
+              {{ t("redis.fuzzyMatch") }}
+            </Button>
             <Button variant="ghost" size="icon" class="h-6 w-6 shrink-0" @click="loadKeys">
               <Loader2 v-if="loading" class="h-3 w-3 animate-spin" />
               <RefreshCw v-else class="h-3 w-3" />
