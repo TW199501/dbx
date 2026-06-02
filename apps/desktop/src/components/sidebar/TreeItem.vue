@@ -2360,7 +2360,7 @@ const canCloseDatabaseConnection = computed(
     props.node.type === "database" &&
     !!props.node.connectionId &&
     props.node.database != null &&
-    connectionStore.isTreeNodeChildrenLoaded(props.node.id),
+    connectionStore.connectedIds.has(props.node.connectionId),
 );
 const nodeIconClass = computed(() => {
   const infoClass = getIconInfo(props.node)?.colorClass;
