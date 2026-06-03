@@ -60,6 +60,37 @@ function runTask(task) {
   });
 }
 
+function outputFailureExcerpt(output) {
+  const lines = output.trimEnd().split(/\r?\n/);
+  const selected = new Set();
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!/\bnot ok\b|AssertionError|ERR_ASSERT|^# fail\b|^# tests\b|^# pass\b/.test(lines[index])) continue;
+    const start = Math.max(0, index - 2);
+    const end = Math.min(lines.length, index + 14);
+    for (let lineIndex = start; lineIndex < end; lineIndex += 1) {
+      selected.add(lineIndex);
+    }
+  }
+
+  if (selected.size === 0) return "";
+
+  const excerpt = [];
+  let previous = -2;
+  for (const index of [...selected].sort((a, b) => a - b)) {
+    if (index > previous + 1 && excerpt.length > 0) excerpt.push("...");
+    excerpt.push(lines[index]);
+    previous = index;
+  }
+  return excerpt.join("\n");
+}
+
+function tailOutput(output, maxLines = 120) {
+  const lines = output.trimEnd().split(/\r?\n/);
+  if (lines.length <= maxLines) return lines.join("\n");
+  return [`... omitted ${lines.length - maxLines} earlier line(s) ...`, ...lines.slice(-maxLines)].join("\n");
+}
+
 const results = await Promise.all(tasks.map(runTask));
 
 for (const result of results) {
@@ -73,10 +104,16 @@ const failures = results.filter((result) => result.code !== 0);
 for (const failure of failures) {
   console.error(`\n${failure.name} output:`);
   if (failure.output) {
-    console.error(failure.output.trimEnd());
+    const excerpt = outputFailureExcerpt(failure.output);
+    if (excerpt) {
+      console.error("failure excerpt:");
+      console.error(excerpt);
+      console.error("\noutput tail:");
+    }
+    console.error(tailOutput(failure.output));
   }
   if (failure.errorOutput) {
-    console.error(failure.errorOutput.trimEnd());
+    console.error(tailOutput(failure.errorOutput));
   }
 }
 
