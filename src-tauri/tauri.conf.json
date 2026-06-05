@@ -21,7 +21,6 @@
         "fullscreen": false,
         "visible": false,
         "titleBarStyle": "Overlay",
-        "acceptFirstMouse": true,
         "trafficLightPosition": {
           "x": 16,
           "y": 18

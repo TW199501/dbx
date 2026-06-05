@@ -27,7 +27,6 @@ import { useNavigationTargets } from "@/composables/useNavigationTargets";
 import { useDataGridActions } from "@/composables/useDataGridActions";
 import { useTauriEvents } from "@/composables/useTauriEvents";
 import { useVisibilityChange } from "@/composables/useVisibilityChange";
-import { installWindowDragRegions } from "@/composables/useWindowDragRegion";
 import "@/i18n";
 import { translateBackendError } from "@/i18n/backend-errors";
 import * as api from "@/lib/api";
@@ -47,7 +46,6 @@ import {
   isFocusSearchShortcut,
   isModRShortcut,
   isNewQueryShortcut,
-  isNewWindowShortcut,
   isObjectSourceSaveShortcutTarget,
   isResetZoomShortcut,
   isRefreshDataShortcut,
@@ -61,8 +59,6 @@ import { classifyAiSqlExecution } from "@/lib/aiSqlExecutionPolicy";
 import { buildHistoryAiAnalysisPrompt } from "@/lib/historyAiAnalysis";
 import { countAvailableAgentDriverUpdates, type AgentDriverUpdateBadgeState } from "@/lib/agentDriverUpdateBadge";
 import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/safeStorage";
-import { openDesktopWindow } from "@/lib/desktopWindows";
-import { subscribeTableMutations } from "@/lib/tableMutationBroadcast";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -107,8 +103,6 @@ const { setupFileDrop } = useFileDrop();
 const isDesktop = isTauriRuntime();
 const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 let updateCheckTimer: ReturnType<typeof setInterval> | undefined;
-let unsubscribeTableMutations: (() => void) | undefined;
-let uninstallWindowDragRegions: (() => void) | undefined;
 const needsAuth = ref(!isDesktop);
 const authenticated = ref(isDesktop);
 const setupRequired = ref(false);
@@ -766,12 +760,6 @@ function handleKeydown(e: KeyboardEvent) {
     contentAreaRef.value?.refreshData();
     return;
   }
-  if (isNewWindowShortcut(e)) {
-    e.preventDefault();
-    e.stopPropagation();
-    void openDesktopWindow();
-    return;
-  }
   if (isNewQueryShortcut(e, shortcuts)) {
     e.preventDefault();
     e.stopPropagation();
@@ -900,11 +888,7 @@ onMounted(async () => {
   });
   applyTheme();
   void applyUiScale(settingsStore.editorSettings.uiScale);
-  window.addEventListener("keydown", handleKeydown, true);
-  uninstallWindowDragRegions = installWindowDragRegions();
-  unsubscribeTableMutations = subscribeTableMutations((message) => {
-    queryStore.markTableTabsStale(message);
-  });
+  window.addEventListener("keydown", handleKeydown);
   window.addEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
   if (isDesktop) {
     document.addEventListener("contextmenu", handleContextMenu);
@@ -960,11 +944,7 @@ onUnmounted(() => {
   if (updateCheckTimer) {
     clearInterval(updateCheckTimer);
   }
-  window.removeEventListener("keydown", handleKeydown, true);
-  uninstallWindowDragRegions?.();
-  uninstallWindowDragRegions = undefined;
-  unsubscribeTableMutations?.();
-  unsubscribeTableMutations = undefined;
+  window.removeEventListener("keydown", handleKeydown);
   window.removeEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
   document.removeEventListener("contextmenu", handleContextMenu);
 });

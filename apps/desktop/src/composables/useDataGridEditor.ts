@@ -5,10 +5,8 @@ import { rowStatusFilterAfterAddingRow, type RowStatusFilter } from "@/lib/gridR
 import { supportsDataGridTransaction } from "@/lib/tableEditing";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useHistoryStore } from "@/stores/historyStore";
-import { useQueryStore } from "@/stores/queryStore";
 import type { ColumnInfo, DatabaseType } from "@/types/database";
 import { DBX_NEO4J_ELEMENT_ID_COLUMN, DBX_ROWID_COLUMN } from "@/lib/tableEditing";
-import { broadcastTableMutation } from "@/lib/tableMutationBroadcast";
 
 type CellValue = string | number | boolean | null;
 
@@ -96,7 +94,6 @@ const pendingChangesCache = new Map<string, PendingChangesSnapshot>();
 export function useDataGridEditor(options: UseDataGridEditorOptions) {
   const connectionStore = useConnectionStore();
   const historyStore = useHistoryStore();
-  const queryStore = useQueryStore();
 
   const {
     result,
@@ -643,19 +640,6 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     );
   }
 
-  function notifyTableMutation() {
-    if (!connectionId.value || !database.value || !tableMeta.value) return;
-    const message = {
-      connectionId: connectionId.value,
-      database: database.value,
-      schema: tableMeta.value.schema,
-      tableName: tableMeta.value.tableName,
-      sourceTabId: cacheKey?.value,
-    };
-    queryStore.markTableTabsStale(message);
-    broadcastTableMutation(message);
-  }
-
   async function saveChanges() {
     saveError.value = "";
     isSaving.value = true;
@@ -678,7 +662,6 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
       dirtyRows.value.clear();
       newRows.value = [];
       deletedRows.value.clear();
-      notifyTableMutation();
       exitTransaction();
       isSaving.value = false;
       if (shouldReloadAfterSave) {
@@ -769,7 +752,6 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     dirtyRows.value.clear();
     newRows.value = [];
     deletedRows.value.clear();
-    notifyTableMutation();
     exitTransaction();
     isSaving.value = false;
     if (shouldReloadAfterSave) {
