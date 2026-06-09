@@ -1878,6 +1878,7 @@ export default {
     shortcutRefreshData: "Refresh data",
     shortcutToggleTranspose: "Toggle transpose view",
     shortcutCancelSearch: "Cancel search",
+    shortcutToggleSidebar: "Toggle sidebar",
     shortcutScopeGlobal: "Global",
     shortcutScopeEditor: "SQL editor",
     shortcutScopeGrid: "Data grid",

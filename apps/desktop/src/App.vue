@@ -51,6 +51,7 @@ import {
   isResetZoomShortcut,
   isRefreshDataShortcut,
   isSaveShortcut,
+  isToggleSidebarShortcut,
   isZoomInShortcut,
   isZoomOutShortcut,
 } from "@/lib/keyboardShortcuts";
@@ -788,6 +789,12 @@ function handleKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     void newQuery();
+    return;
+  }
+  if (isToggleSidebarShortcut(e, shortcuts)) {
+    e.preventDefault();
+    e.stopPropagation();
+    setSidebarOpen(!sidebarOpen.value);
     return;
   }
   if (isCloseTabShortcut(e, shortcuts)) {

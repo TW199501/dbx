@@ -1796,6 +1796,7 @@ export default {
     shortcutNewQuery: "Nova consulta",
     shortcutOpenSettings: "Abrir configurações",
     shortcutCloseTab: "Fechar aba",
+    shortcutToggleSidebar: "Alternar barra lateral",
     shortcutFocusSearch: "Focar na pesquisa",
     shortcutZoomInUi: "Aumentar zoom da UI",
     shortcutZoomOutUi: "Diminuir zoom da UI",

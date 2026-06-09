@@ -147,6 +147,10 @@ export function isCancelSearchShortcut(event: ShortcutLikeEvent, shortcuts?: Par
   return matchesShortcut(event, actionShortcut("cancelSearch", shortcuts));
 }
 
+export function isToggleSidebarShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("toggleSidebar", shortcuts));
+}
+
 export function isBrowserReloadShortcut(event: ShortcutLikeEvent): boolean {
   if (event.isComposing || event.altKey) return false;
   const key = normalizeKey(event.key);
