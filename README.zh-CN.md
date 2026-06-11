@@ -1,5 +1,5 @@
 <div align="center">
-  <p style="font-size: 18px; white-space: nowrap;"><strong>15 MB 驾驭 40+ 种数据库。桌面端 & Docker 自托管，内置 AI 助手。</strong></p>
+  <p style="font-size: 18px; white-space: nowrap;"><strong>15 MB 驾驭 50+ 种数据库。桌面端 & Docker 自托管，内置 AI 助手。</strong></p>
 
   <p>
     <img src="https://dl.dbxio.com/assets/readme-hero-20260517.png" alt="DBX 截图" width="820" />
@@ -85,9 +85,9 @@
 
 ## 功能特性
 
-### 40+ 种数据库，一个工具搞定
+### 50+ 种数据库，一个工具搞定
 
-MySQL、PostgreSQL、SQLite、Redis、MongoDB、DuckDB、ClickHouse、SQL Server、Oracle、Elasticsearch、MariaDB、TiDB、OceanBase、openGauss、GaussDB、KWDB、KingBase、Vastbase、GoldenDB、Doris、SelectDB、StarRocks、Redshift、DM、TDengine、虚谷 XuguDB、CockroachDB、Access、HighGo 等数据库都能直接连接。Agent/JDBC 方向的配置还可扩展到 H2、Snowflake、Trino、Hive、DB2、Informix、Neo4j、Cassandra、BigQuery、Kylin、SunDB 和自定义 JDBC。全部装进约 15 MB 的应用里，不内嵌 Chromium。
+MySQL、PostgreSQL、SQLite、Redis、MongoDB、DuckDB、ClickHouse、SQL Server、Oracle、Elasticsearch、MariaDB、TiDB、OceanBase、openGauss、GaussDB、KWDB、KingBase、Vastbase、GoldenDB、Doris、SelectDB、StarRocks、Redshift、DM、TDengine、虚谷 XuguDB、CockroachDB、Access、HighGo 等数据库都能直接连接。Agent/JDBC 方向的配置还可扩展到 H2、Snowflake、Trino、Hive、DB2、Informix、Neo4j、Cassandra、BigQuery、Kylin、SunDB 和自定义 JDBC。新增的原生与 Agent 驱动还覆盖了 Databricks、SAP HANA、Teradata、Vertica、Firebird、Exasol、崖山 YashanDB、GBase、Databend、RQLite、Turso、InfluxDB、IoTDB、etcd、IRIS 等。全部装进约 15 MB 的应用里，不内嵌 Chromium。
 
 ### 查询编辑器
 
@@ -294,12 +294,12 @@ pnpm tauri build
 
 <details>
 <summary><strong>DBX 和 DBeaver / TablePlus / Beekeeper Studio 有什么区别？</strong></summary>
-DBX 仅 15 MB，无需运行时依赖（无需 Java、无需 Python）。AI 和 MCP 是原生内置功能，不是插件。单一代码库同时支持 40+ 数据库、桌面端、Docker 和 Web。
+DBX 仅 15 MB，无需运行时依赖（无需 Java、无需 Python）。AI 和 MCP 是原生内置功能，不是插件。单一代码库同时支持 50+ 数据库、桌面端、Docker 和 Web。
 </details>
 
 <details>
 <summary><strong>支持哪些数据库？</strong></summary>
-MySQL、PostgreSQL、SQLite、Redis、MongoDB、DuckDB、ClickHouse、SQL Server、Oracle、Elasticsearch、MariaDB、TiDB、OceanBase、openGauss、GaussDB、KWDB、KingBase、Vastbase、GoldenDB、Doris、SelectDB、StarRocks、Redshift、DM、TDengine、虚谷 XuguDB、CockroachDB、Access、HighGo 等。JDBC 方向配置可扩展到 H2、Snowflake、Trino、Hive、DB2、Informix、Neo4j、Cassandra、BigQuery、Kylin、SunDB 及自定义 JDBC 连接。
+MySQL、PostgreSQL、SQLite、Redis、MongoDB、DuckDB、ClickHouse、SQL Server、Oracle、Elasticsearch、MariaDB、TiDB、OceanBase、openGauss、GaussDB、KWDB、KingBase、Vastbase、GoldenDB、Doris、SelectDB、StarRocks、Redshift、DM、TDengine、虚谷 XuguDB、CockroachDB、Access、HighGo 等。JDBC 方向配置可扩展到 H2、Snowflake、Trino、Hive、DB2、Informix、Neo4j、Cassandra、BigQuery、Kylin、SunDB、Databricks、SAP HANA、Teradata、Vertica、Firebird、Exasol、崖山 YashanDB、GBase、Databend、RQLite、Turso、InfluxDB、IoTDB、etcd、IRIS 及自定义 JDBC 连接。
 </details>
 
 <details>
