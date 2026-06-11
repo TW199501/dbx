@@ -523,7 +523,7 @@ export default async function LandingPage({ params }: { params: Promise<{ lang: 
                 ) : db.icon ? (
                   <img src={db.icon} alt="" width={38} height={38} className="block w-[38px] h-[38px] object-contain" />
                 ) : (
-                  <span className="grid place-items-center min-w-[46px] h-8 rounded-lg px-2 text-white text-xs font-[780]">{db.initials}</span>
+                  <span className="grid place-items-center min-w-[46px] h-8 rounded-lg px-2 text-white text-xs font-[780]">{db.name.slice(0, 2).toUpperCase()}</span>
                 )}
               </div>
               <strong className={`text-sm font-[650] leading-[1.2] text-center ${isCta ? "text-landing-blue" : "text-[color-mix(in_srgb,var(--color-landing-ink)_92%,var(--color-landing-muted))]"}`}>{db.name}</strong>
