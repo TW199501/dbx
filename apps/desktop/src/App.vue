@@ -218,7 +218,19 @@ const connectionStats = computed(() => ({
 }));
 const recentConnections = computed(() => connectionStore.connections.slice(0, 5));
 const savedSqlHistoryItems = computed(() => {
-  const folderById = new Map(savedSqlStore.allFolders.map((folder) => [folder.id, folder.name]));
+  const folderById = new Map(savedSqlStore.allFolders.map((folder) => [folder.id, folder]));
+  const folderPath = (folderId?: string): string | undefined => {
+    if (!folderId) return undefined;
+    const parts: string[] = [];
+    const seen = new Set<string>();
+    let folder = folderById.get(folderId);
+    while (folder && !seen.has(folder.id)) {
+      seen.add(folder.id);
+      parts.unshift(folder.name);
+      folder = folder.parentFolderId ? folderById.get(folder.parentFolderId) : undefined;
+    }
+    return parts.join("/");
+  };
   return rankSavedSqlHistory(savedSqlStore.allFiles, { limit: 6 }).map((file) => {
     const connection = connectionStore.getConfig(file.connectionId);
     return {
@@ -226,13 +238,25 @@ const savedSqlHistoryItems = computed(() => {
       name: file.name,
       connectionName: connection ? connectionRedactedNameLabel(connection) : t("welcome.unknownConnection"),
       database: file.database,
-      folderName: file.folderId ? folderById.get(file.folderId) : undefined,
+      folderName: folderPath(file.folderId),
       openCount: file.openCount ?? 0,
     };
   });
 });
 const saveSqlFolders = computed(() => {
-  return savedSqlStore.allFolders;
+  const folderById = new Map(savedSqlStore.allFolders.map((folder) => [folder.id, folder]));
+  const pathForFolder = (folderId: string) => {
+    const parts: string[] = [];
+    const seen = new Set<string>();
+    let folder = folderById.get(folderId);
+    while (folder && !seen.has(folder.id)) {
+      seen.add(folder.id);
+      parts.unshift(folder.name);
+      folder = folder.parentFolderId ? folderById.get(folder.parentFolderId) : undefined;
+    }
+    return parts.join(" / ");
+  };
+  return savedSqlStore.allFoldersTreeOrder.map((folder) => ({ ...folder, displayName: pathForFolder(folder.id) || folder.name }));
 });
 
 async function applyUiScale(scale: number) {
@@ -1209,7 +1233,7 @@ onUnmounted(() => {
                 <SelectContent position="popper">
                   <SelectItem :value="ROOT_SAVED_SQL_FOLDER">{{ t("savedSql.rootFolder") }}</SelectItem>
                   <SelectItem v-for="folder in saveSqlFolders" :key="folder.id" :value="folder.id">
-                    {{ folder.name }}
+                    {{ folder.displayName }}
                   </SelectItem>
                 </SelectContent>
               </Select>

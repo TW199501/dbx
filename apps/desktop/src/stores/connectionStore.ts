@@ -476,7 +476,7 @@ export const useConnectionStore = defineStore("connection", () => {
     const node = findNode(treeNodes.value, id);
     if (node) node.pinned = next.has(id);
 
-    const isConnectionOrGroup = treeNodes.value.some((n) => n.id === id) || treeNodes.value.some((n) => n.type === "connection-group" && n.children?.some((c) => c.id === id));
+    const isConnectionOrGroup = !!findNode(treeNodes.value, id);
     if (isConnectionOrGroup) {
       rebuildTreeNodes();
     } else {
@@ -2512,8 +2512,8 @@ export const useConnectionStore = defineStore("connection", () => {
     fieldLineageSource,
     databaseSearchSource,
     databaseExportSource,
-    createConnectionGroup(name: string) {
-      const result = createGroupOp(sidebarLayout.value, name);
+    createConnectionGroup(name: string, parentGroupId?: string | null) {
+      const result = createGroupOp(sidebarLayout.value, name, parentGroupId);
       updateLayoutAndRebuild(result.layout);
       return result.groupId;
     },

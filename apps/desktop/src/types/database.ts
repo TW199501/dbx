@@ -357,7 +357,7 @@ export interface ConnectionGroup {
   collapsed: boolean;
 }
 
-export type SidebarOrderEntry = { type: "group"; id: string; connectionIds: string[] } | { type: "connection"; id: string };
+export type SidebarOrderEntry = { type: "group"; id: string; children?: SidebarOrderEntry[]; connectionIds?: string[] } | { type: "connection"; id: string };
 
 export interface SidebarLayout {
   groups: ConnectionGroup[];
@@ -475,6 +475,7 @@ export interface QueryTab {
 export interface SavedSqlFolder {
   id: string;
   connectionId: string;
+  parentFolderId?: string;
   name: string;
   orderIndex?: number;
   createdAt: string;
