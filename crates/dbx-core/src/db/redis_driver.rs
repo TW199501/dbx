@@ -635,6 +635,8 @@ fn parse_cluster_slot_master(value: RedisRawValue, fallback_host: &str) -> Resul
 }
 
 pub fn parse_command_argv(command_text: &str) -> Result<Vec<String>, String> {
+    // Strip trailing semicolons so commands like "HGETALL aaa;" work naturally
+    let command_text = command_text.trim_end().trim_end_matches(';');
     let mut argv = Vec::new();
     let mut current = String::new();
     let mut chars = command_text.chars().peekable();
@@ -797,14 +799,18 @@ where
     redis::cmd("FLUSHDB").query_async::<()>(con).await.map_err(|e| e.to_string())
 }
 
-pub async fn execute_command<C>(con: &mut C, command_text: &str) -> Result<RedisCommandResult, String>
+pub async fn execute_command<C>(
+    con: &mut C,
+    command_text: &str,
+    skip_safety_check: bool,
+) -> Result<RedisCommandResult, String>
 where
     C: ConnectionLike + Send + Sync + Unpin,
 {
     let argv = parse_command_argv(command_text)?;
     let command = argv[0].to_ascii_uppercase();
     let safety = classify_command(&command);
-    if safety == RedisCommandSafety::Blocked {
+    if !skip_safety_check && safety == RedisCommandSafety::Blocked {
         return Err(format!("Redis command is blocked for safety: {command}"));
     }
 
