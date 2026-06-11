@@ -257,6 +257,7 @@ async fn main() {
         // MongoDB
         .route("/mongo/list-databases", post(routes::mongo::list_databases))
         .route("/mongo/list-collections", post(routes::mongo::list_collections))
+        .route("/document-store/find-documents", post(routes::mongo::document_find_documents))
         .route("/mongo/find-documents", post(routes::mongo::find_documents))
         .route("/mongo/aggregate-documents", post(routes::mongo::aggregate_documents))
         .route("/mongo/insert-document", post(routes::mongo::insert_document))

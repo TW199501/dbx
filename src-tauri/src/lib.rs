@@ -476,6 +476,7 @@ pub fn run() {
             commands::saved_sql::sync_saved_sql_directory,
             commands::mongo_cmd::mongo_list_databases,
             commands::mongo_cmd::mongo_list_collections,
+            commands::mongo_cmd::document_find_documents,
             commands::mongo_cmd::mongo_find_documents,
             commands::mongo_cmd::mongo_aggregate_documents,
             commands::mongo_cmd::mongo_insert_document,

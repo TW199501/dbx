@@ -257,6 +257,7 @@ export const etcdDelete = forward("etcdDelete");
 // MongoDB
 export const mongoListDatabases = forward("mongoListDatabases");
 export const mongoListCollections = forward("mongoListCollections");
+export const documentFindDocuments = forward("documentFindDocuments");
 export const mongoFindDocuments = forward("mongoFindDocuments");
 export const mongoAggregateDocuments = forward("mongoAggregateDocuments");
 export const mongoInsertDocument = forward("mongoInsertDocument");

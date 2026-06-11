@@ -1259,6 +1259,10 @@ export async function mongoFindDocuments(connectionId: string, database: string,
   return post("/api/mongo/find-documents", { connectionId, database, collection, skip, limit, filter, sort });
 }
 
+export async function documentFindDocuments(connectionId: string, database: string, collection: string, skip: number, limit: number, filter?: string, sort?: string): Promise<MongoDocumentResult> {
+  return post("/api/document-store/find-documents", { connectionId, database, collection, skip, limit, filter, sort });
+}
+
 export async function mongoAggregateDocuments(connectionId: string, database: string, collection: string, pipelineJson: string, maxRows?: number): Promise<MongoDocumentResult> {
   return post("/api/mongo/aggregate-documents", { connectionId, database, collection, pipelineJson, maxRows });
 }
