@@ -1608,6 +1608,8 @@
     useCustomFont: "Usar “{font}”",
     languageTitle: "Idioma / Language",
     fontSize: "Tamaño de fuente",
+    toolbarTitle: "Barra de herramientas",
+    toolbarHiddenHint: "Los botones ocultos de la izquierda aparecerán en el menú «Más».",
     uiScale: "Escala de interfaz",
     uiScaleDescription: "Escala toda la interfaz de escritorio para pantallas de alta densidad. Los cambios se aplican al instante y se restauran al volver a abrir.",
     theme: "Tema",

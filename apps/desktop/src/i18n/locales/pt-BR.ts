@@ -1725,6 +1725,8 @@
     useCustomFont: "Usar “{font}”",
     languageTitle: "Idioma / 语言",
     fontSize: "Tamanho da fonte",
+    toolbarTitle: "Barra de ferramentas",
+    toolbarHiddenHint: "Os botões ocultos à esquerda aparecerão no menu «Mais».",
     uiScale: "Escala da UI",
     uiScaleDescription: "Dimensione toda a UI do desktop para telas de alta resolução (high-DPI). As alterações são aplicadas imediatamente e restauradas na próxima inicialização.",
     theme: "Tema",

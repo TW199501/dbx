@@ -1829,6 +1829,8 @@
     useCustomFont: "Use “{font}”",
     languageTitle: "Language / 语言",
     fontSize: "Font Size",
+    toolbarTitle: "Toolbar",
+    toolbarHiddenHint: 'Hidden left-side buttons will appear in the "More" dropdown.',
     uiScale: "UI Scale",
     uiScaleDescription: "Scale the entire desktop UI for high-DPI displays. Changes apply immediately and are restored on next launch.",
     theme: "Theme",
