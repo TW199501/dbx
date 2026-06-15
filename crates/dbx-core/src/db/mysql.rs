@@ -724,6 +724,8 @@ fn mysql_error_should_retry_with_text_protocol(error: &str) -> bool {
     (lower.contains("1105") && lower.contains("hy000"))
         || (lower.contains("1615") && lower.contains("re-prepared"))
         || lower.contains("com_stmt_prepare")
+        || lower.contains("can't parse")
+        || lower.contains("buf doesn't have enough data")
         || lower.contains("prepared statement protocol")
         || lower.contains("this command is not supported in the prepared statement protocol yet")
 }
@@ -1556,7 +1558,7 @@ pub async fn execute_query_on_conn_with_max_rows(
     let row_limit = query_result_row_limit(max_rows);
 
     if is_result_set_query(sql, dialect) {
-        if bare || requires_text_protocol_query(sql, dialect) {
+        if bare || prefers_text_protocol_query(sql, dialect) {
             execute_result_set_with_text_protocol_on_conn(conn, sql, row_limit, start).await
         } else {
             match execute_result_set_with_prepared_protocol_on_conn(conn, sql, row_limit, start).await {
@@ -1593,6 +1595,12 @@ pub async fn execute_query_on_conn_with_max_rows(
             has_more: false,
         })
     }
+}
+
+fn prefers_text_protocol_query(sql: &str, dialect: MySqlQueryDialect) -> bool {
+    // User-entered result-set queries are not parameterized in DBX. Text protocol
+    // avoids binary result decoding bugs in MySQL-compatible servers and proxies.
+    is_result_set_query(sql, dialect) || requires_text_protocol_query(sql, dialect)
 }
 
 fn is_result_set_query(sql: &str, dialect: MySqlQueryDialect) -> bool {
@@ -2016,6 +2024,23 @@ mod tests {
         assert!(requires_text_protocol_query("SHOW GRANTS FOR 'repl'@'%'", MySqlQueryDialect::default()));
         assert!(!requires_text_protocol_query("SHOW TABLES", MySqlQueryDialect::default()));
         assert!(!requires_text_protocol_query("SELECT * FROM users", MySqlQueryDialect::default()));
+    }
+
+    #[test]
+    fn mysql_user_result_sets_prefer_text_protocol() {
+        let dialect = MySqlQueryDialect::default();
+
+        assert!(prefers_text_protocol_query("SELECT * FROM users", dialect));
+        assert!(prefers_text_protocol_query("WITH recent AS (SELECT 1 AS id) SELECT id FROM recent", dialect));
+        assert!(prefers_text_protocol_query("SHOW TABLES", dialect));
+        assert!(!prefers_text_protocol_query("UPDATE users SET name = 'Ada' WHERE id = 1", dialect));
+    }
+
+    #[test]
+    fn mysql_binary_decode_parse_errors_retry_with_text_protocol() {
+        assert!(mysql_error_should_retry_with_text_protocol(
+            "Input/output error: can't parse: buf doesn't have enough data"
+        ));
     }
 
     #[test]

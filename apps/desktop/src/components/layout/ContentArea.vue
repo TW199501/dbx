@@ -725,7 +725,7 @@ defineExpose({ focusSearch, refreshData, handleModRTarget });
                 @sort="(column: string, columnIndex: number, direction: 'asc' | 'desc' | null, whereInput?: string) => emit('sort', column, columnIndex, direction, whereInput)"
               >
                 <template v-if="activeTab.result?.columns.includes('Error')" #error-actions="{ errorMessage }">
-                  <Button variant="outline" size="sm" class="mt-2 h-7 gap-1.5 border-destructive/30 bg-background px-2.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive" @click="emit('fixWithAi', String(errorMessage))">
+                  <Button variant="outline" size="sm" class="h-7 gap-1.5 px-2.5 text-xs" @click="emit('fixWithAi', String(errorMessage))">
                     <Bot class="h-3.5 w-3.5" />
                     {{ t("ai.fixWithAi") }}
                   </Button>
