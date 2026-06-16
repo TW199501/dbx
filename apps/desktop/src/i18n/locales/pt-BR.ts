@@ -933,6 +933,8 @@
       callingTool: "Chamando ferramenta...",
       toolDone: "Ferramenta concluída",
       toolError: "Erro da ferramenta",
+      executeSafe: "Verificação de segurança aprovada · Executado",
+      executeBlocked: "Bloqueado pela verificação de segurança",
       contextCompacted: "Contexto compactado",
     },
     agentStepTitles: {

@@ -986,6 +986,8 @@
       callingTool: "Calling tool...",
       toolDone: "Tool completed",
       toolError: "Tool error",
+      executeSafe: "Safety check passed · Executed",
+      executeBlocked: "Blocked by safety check",
       contextCompacted: "Context compressed",
     },
     agentStepTitles: {
