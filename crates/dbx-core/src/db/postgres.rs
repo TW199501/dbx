@@ -420,6 +420,11 @@ fn should_retry_postgres_text_query(err: &tokio_postgres::Error) -> bool {
         || message.contains("cannot display a value of type")
 }
 
+fn should_retry_postgres_stale_cache(err: &tokio_postgres::Error) -> bool {
+    let message = err.as_db_error().map(ToString::to_string).unwrap_or_else(|| err.to_string()).to_ascii_lowercase();
+    message.contains("cached plan must not change result type")
+}
+
 async fn execute_select_prepared(
     client: &deadpool_postgres::Client,
     sql: &str,
@@ -542,6 +547,20 @@ async fn execute_select_query(
 ) -> Result<QueryResult, String> {
     match execute_select_prepared(client, sql, start, row_limit).await {
         Ok(result) => Ok(result),
+        Err(err) if should_retry_postgres_stale_cache(&err) => {
+            // The cached prepared statement is stale (e.g. the view or table
+            // schema changed since the statement was prepared). Evict the
+            // stale entry and retry with a fresh server-side prepare.
+            log::warn!("[postgres][select:stale_cache] evicting cached statement: {}", pg_error_to_string(err));
+            client.statement_cache.remove(sql, &[]);
+            match execute_select_prepared(client, sql, start, row_limit).await {
+                Ok(result) => Ok(result),
+                Err(err) if should_retry_postgres_text_query(&err) => {
+                    execute_select_text(client, sql, start, row_limit).await
+                }
+                Err(err) => Err(pg_error_to_string(err)),
+            }
+        }
         Err(err) if should_retry_postgres_text_query(&err) => execute_select_text(client, sql, start, row_limit).await,
         Err(err) => Err(pg_error_to_string(err)),
     }
