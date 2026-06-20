@@ -229,7 +229,6 @@ const transposeRowIndex = ref<number | null>(null);
 const showTranspose = ref(false);
 const multiRowTranspose = ref(false);
 const preserveTransposeOnNextResult = ref(false);
-const autoTransposedForResult = ref(false);
 
 watch(
   () => props.result,
@@ -244,16 +243,6 @@ watch(
       loading: props.loading,
       elapsedSinceSetup: dataGridElapsed(),
     });
-    // Auto-transpose when a new result has exactly 1 row with multiple columns.
-    if (result.rows.length === 1 && result.columns.length > 1 && !preserveTransposeOnNextResult.value) {
-      autoTransposedForResult.value = true;
-      nextTick(() => {
-        showTranspose.value = true;
-        transposeRowIndex.value = 0;
-      });
-    } else {
-      autoTransposedForResult.value = false;
-    }
 
     nextTick(() => {
       console.info("[DBX][DataGrid:result:nextTick]", {
@@ -5353,7 +5342,6 @@ function currentTransposeViewportRowIndex(): number {
 }
 
 function closeTranspose(scrollToCurrentRecord = true) {
-  autoTransposedForResult.value = false;
   const rowIndex = currentTransposeViewportRowIndex();
   showTranspose.value = false;
   transposeRowIndex.value = null;
@@ -5384,7 +5372,6 @@ function openContextTranspose() {
 }
 
 function toggleTranspose(rowIndex: number) {
-  autoTransposedForResult.value = false;
   const next = nextTransposeState(showTranspose.value, transposeRowIndex.value, rowIndex);
   transposeRowIndex.value = next.transposeRowIndex;
   showTranspose.value = next.showTranspose;
