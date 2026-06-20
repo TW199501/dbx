@@ -1,0 +1,319 @@
+# Instincts generated from https://github.com/TW199501/dbx
+# Generated: 2026-06-20T23:32:08.715Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: dbx-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/TW199501/dbx
+---
+
+# Dbx Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix, docs, build
+
+## Evidence
+
+- 4 commits analyzed
+- Detected conventional commit pattern
+- Examples: docs: add CLAUDE.md, fix(build): alias @babel/runtime for rolldown and correct tauri signing env var
+
+---
+id: dbx-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/TW199501/dbx
+---
+
+# Dbx Commit Length
+
+## Action
+
+Keep commit messages concise (~46 characters)
+
+## Evidence
+
+- Average commit message length: 46 chars
+- Based on 4 commits
+
+---
+id: dbx-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/TW199501/dbx
+---
+
+# Dbx Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: dbx-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/TW199501/dbx
+---
+
+# Dbx Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: dbx-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/TW199501/dbx
+---
+
+# Dbx Export Style
+
+## Action
+
+Prefer default exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: default
+
+---
+id: dbx-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/TW199501/dbx
+---
+
+# Dbx Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: dbx-instinct-camelcase-files
+trigger: "When creating or renaming a file in the codebase"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Camelcase Files
+
+## Action
+
+Use camelCase for the file name
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.files
+
+---
+id: dbx-instinct-camelcase-functions
+trigger: "When defining a new function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Camelcase Functions
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.functions
+
+---
+id: dbx-instinct-pascalcase-classes
+trigger: "When defining a new class"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Pascalcase Classes
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.classes
+
+---
+id: dbx-instinct-screaming-constants
+trigger: "When defining a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Screaming Constants
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.constants
+
+---
+id: dbx-instinct-relative-imports
+trigger: "When importing modules within the codebase"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Relative Imports
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in codeStyle.importStyle
+
+---
+id: dbx-instinct-default-exports
+trigger: "When exporting a module or component"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Default Exports
+
+## Action
+
+Use default export style
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle
+
+---
+id: dbx-instinct-conventional-commits
+trigger: "When writing a git commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Conventional Commits
+
+## Action
+
+Use the conventional commit format with a prefix (e.g., fix, docs, build)
+
+## Evidence
+
+- Seen in commit: docs: add CLAUDE.md
+- Seen in commit: fix(build): alias @babel/runtime for rolldown and correct tauri signing env var
+- Pattern in commits.prefixes
+
+---
+id: dbx-instinct-commit-length
+trigger: "When writing a git commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Commit Length
+
+## Action
+
+Keep the commit message concise, around 46 characters on average
+
+## Evidence
+
+- Pattern in commits.averageLength
+
+---
+id: dbx-instinct-monorepo-folders
+trigger: "When adding new packages or modules"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Monorepo Folders
+
+## Action
+
+Place them in the appropriate monorepo folder (e.g., crates, scripts, apps, src-tauri)
+
+## Evidence
+
+- Pattern in architecture.folderStructure.commonFolders
+
+---
+id: dbx-instinct-separate-tests
+trigger: "When creating new tests"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: TW199501/dbx
+---
+
+# Dbx Instinct Separate Tests
+
+## Action
+
+Place tests in a separate location from source code
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
