@@ -98,10 +98,10 @@ const pubkey = existsSync(pubPath)
   ? readFileSync(pubPath, 'utf8').trim()
   : '(找不到 .pub,請檢查輸出目錄)'
 
-// 路徑用 TAURI_SIGNING_PRIVATE_KEY_PATH;TAURI_SIGNING_PRIVATE_KEY 則是放私鑰「內容」
+// 打包簽名讀 TAURI_SIGNING_PRIVATE_KEY(可填私鑰「檔案路徑」或「內容」)
 const setKey = isWin
-  ? `  $env:TAURI_SIGNING_PRIVATE_KEY_PATH = "${outPath}"`
-  : `  export TAURI_SIGNING_PRIVATE_KEY_PATH="${outPath}"`
+  ? `  $env:TAURI_SIGNING_PRIVATE_KEY = "${outPath}"`
+  : `  export TAURI_SIGNING_PRIVATE_KEY="${outPath}"`
 const hasPw = !noPassword
 const setPw = hasPw
   ? isWin
@@ -123,7 +123,7 @@ ${setKey}
 ${setPw}  pnpm tauri build
 
 備註:
-  • 路徑用 TAURI_SIGNING_PRIVATE_KEY_PATH;若要改填私鑰內容則用 TAURI_SIGNING_PRIVATE_KEY。
+  • TAURI_SIGNING_PRIVATE_KEY 可填私鑰「檔案路徑」或「內容」(打包簽名讀此變數)。
   • 公鑰只有在本地測試自動更新時才需貼進 tauri.conf.json,且【勿 commit】。
   • 正式發布請改用 CI secret 裡的官方私鑰,不要用這把本地密鑰。
 ────────────────────────────────────

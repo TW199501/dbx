@@ -5,7 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [features]
-default = ["duckdb-bundled", "mq-admin"]
+default = ["mq-admin"]
 duckdb-bundled = ["duckdb/bundled"]
 mq-admin = []
 
