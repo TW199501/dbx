@@ -22,6 +22,7 @@
     "test": "vitest run",
     "preview": "vite preview --config apps/desktop/vite.config.ts",
     "tauri": "tauri",
+    "gen:key": "node scripts/generate-updater-key.mjs",
     "prepare": "husky"
   },
   "dependencies": {
