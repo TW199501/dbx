@@ -52,6 +52,9 @@ export default defineConfig(async () => ({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      // @uiw/codemirror-theme-* 透過 @babel/runtime helpers 引入,但未在自身 package.json
+      // 宣告該依賴(phantom dependency)。vite 8 的 rolldown 解析較嚴格,需明確指向實際位置。
+      "@babel/runtime": path.resolve(__dirname, "../../node_modules/@babel/runtime"),
     },
   },
   clearScreen: false,
