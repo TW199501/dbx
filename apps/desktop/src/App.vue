@@ -1543,12 +1543,7 @@ onUnmounted(() => {
           @download-and-install="downloadAndInstallUpdate"
           @restart="restartApp"
         />
-        <CloseActionPromptDialog
-          v-if="isDesktop"
-          v-model:open="showCloseActionPrompt"
-          @quit="chooseQuit"
-          @minimize="chooseMinimize"
-        />
+        <CloseActionPromptDialog v-if="isDesktop" v-model:open="showCloseActionPrompt" @quit="chooseQuit" @minimize="chooseMinimize" />
         <QuickOpenDialog :open="showQuickOpen" @update:open="showQuickOpen = $event" @select="handleQuickOpenSelect" />
       </div>
       <Teleport to="body">
