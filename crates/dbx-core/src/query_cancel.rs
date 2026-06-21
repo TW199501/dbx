@@ -80,6 +80,20 @@ mod tests {
     }
 
     #[test]
+    fn cancel_invokes_registered_interrupt() {
+        let running = RunningQueries::default();
+        let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = interrupted.clone();
+        let _registered = running.register("exec-1".to_string());
+        running.register_interrupt("exec-1", move || {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        assert!(running.cancel("exec-1"));
+        assert!(interrupted.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
     fn dropping_registration_removes_running_query() {
         let running = RunningQueries::default();
         let registered = running.register("exec-1".to_string());

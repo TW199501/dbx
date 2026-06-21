@@ -853,10 +853,23 @@ pub async fn do_execute(
             let bare = *mode == crate::connection::MysqlMode::Bare;
             let max_rows = options.max_rows;
             drop(connections);
+            let mut conn = db::mysql::get_conn_with_health_check(&p).await?;
+            let connection_id = conn.id();
+            if let Some(ref execution_id) = options.execution_id {
+                let kill_opts = conn.opts().clone();
+                state.running_queries.register_interrupt(execution_id, move || {
+                    let kill_opts = kill_opts.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = db::mysql::kill_query_with_opts(kill_opts, connection_id).await {
+                            log::warn!("Failed to cancel MySQL query {connection_id}: {error}");
+                        }
+                    });
+                });
+            }
             wait_for_query_opt(
                 cancel_token,
                 query_timeout,
-                db::mysql::execute_query_with_max_rows(&p, sql, bare, max_rows, mysql_dialect),
+                db::mysql::execute_query_on_conn_with_max_rows(&mut conn, sql, bare, max_rows, mysql_dialect),
             )
             .await
         }

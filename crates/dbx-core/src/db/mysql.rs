@@ -1727,6 +1727,16 @@ pub async fn execute_query_with_max_rows(
     execute_query_on_conn_with_max_rows(&mut conn, sql, bare, max_rows, dialect).await
 }
 
+pub async fn kill_query(pool: &MySqlPool, connection_id: u32) -> Result<(), String> {
+    let mut conn = pool.get_conn().await.map_err(|e| e.to_string())?;
+    conn.query_drop(format!("KILL QUERY {connection_id}")).await.map_err(|e| e.to_string())
+}
+
+pub async fn kill_query_with_opts(opts: mysql_async::Opts, connection_id: u32) -> Result<(), String> {
+    let mut conn = mysql_async::Conn::new(opts).await.map_err(|e| e.to_string())?;
+    conn.query_drop(format!("KILL QUERY {connection_id}")).await.map_err(|e| e.to_string())
+}
+
 pub async fn execute_query_on_conn_with_max_rows(
     conn: &mut mysql_async::Conn,
     sql: &str,
