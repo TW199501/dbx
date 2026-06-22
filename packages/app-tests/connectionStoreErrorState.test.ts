@@ -102,6 +102,39 @@ test("query errors mentioning connection do not mark the connection disconnected
   }
 });
 
+test("known backend connection errors mark the connection disconnected", async () => {
+  const restoreStorage = installMemoryStorage();
+  const messages = [
+    "java.sql.SQLRecoverableException: 关闭的连接",
+    "java.sql.SQLRecoverableException: 连接已关闭",
+    "server closed session with no notification",
+    "server closed the connection unexpectedly",
+    "Error occurred while creating a new object: error communicating with the server",
+    "ORA-02396: exceeded maximum idle time, please connect again",
+    "Agent stdin not available",
+    "Failed to write to agent stdin",
+  ];
+
+  try {
+    for (const [index, message] of messages.entries()) {
+      setActivePinia(createPinia());
+      const store = useConnectionStore();
+      const connectionId = `conn-${index}`;
+      store.addEphemeralConnection(conn(connectionId));
+      store.activeConnectionId = connectionId;
+
+      const marked = store.recordConnectionLostError(connectionId, new Error(message));
+
+      assert.equal(marked, true, message);
+      assert.equal(store.connectedIds.has(connectionId), false, message);
+      assert.equal(store.activeConnectionId, null, message);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    restoreStorage();
+  }
+});
+
 test("explicit lost-connection marker clears state without relying on error text", async () => {
   const restoreStorage = installMemoryStorage();
   try {
