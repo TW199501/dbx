@@ -46,6 +46,9 @@ public final class KingbaseAgent extends PostgresLikeAgent {
 
     @Override
     public List<DatabaseInfo> listDatabases() {
+        if (!isMysqlCompatMode()) {
+            return super.listDatabases();
+        }
         return unchecked(() -> {
             try (PreparedStatement stmt = requireConnected().prepareStatement("SELECT current_database() AS database_name");
                  ResultSet rs = stmt.executeQuery()) {
@@ -59,6 +62,9 @@ public final class KingbaseAgent extends PostgresLikeAgent {
 
     @Override
     public List<String> listSchemas() {
+        if (!isMysqlCompatMode()) {
+            return super.listSchemas();
+        }
         return unchecked(() -> {
             List<String> result = new ArrayList<>();
             String sql = "SELECT schema_name " +
