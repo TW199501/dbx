@@ -22,6 +22,10 @@ export interface MongoGetIndexesCommand {
   collection: string;
 }
 
+export interface MongoUseCommand {
+  database: string;
+}
+
 export type MongoWriteCommand = { kind: "insert"; collection: string; docsJson: string } | { kind: "update"; collection: string; filter: string; update: string; many: boolean } | { kind: "delete"; collection: string; filter: string; many: boolean };
 
 export interface MongoAggregateSafetyOptions {
@@ -127,6 +131,15 @@ export function parseMongoGetIndexesCommand(input: string): MongoGetIndexesComma
 
   return {
     collection: target.collection,
+  };
+}
+
+export function parseMongoUseCommand(input: string): MongoUseCommand | null {
+  const source = input.trim().replace(/;$/, "").trim();
+  const match = /^use\s+([a-zA-Z0-9_-]+)$/i.exec(source);
+  if (!match) return null;
+  return {
+    database: match[1],
   };
 }
 
@@ -251,6 +264,15 @@ export function mongoWriteToQueryResult(affectedRows: number, executionTimeMs: n
   };
 }
 
+export function mongoUseToQueryResult(database: string, executionTimeMs: number): QueryResult {
+  return {
+    columns: ["message"],
+    rows: [[`switched to db ${database}`]],
+    affected_rows: 0,
+    execution_time_ms: Math.max(0, Math.round(executionTimeMs)),
+  };
+}
+
 export function mongoIndexesToQueryResult(
   indexes: {
     name: string;
@@ -283,19 +305,19 @@ function parseFindTarget(source: string): { collection: string; findCallIndex: n
 
 function parseCollectionMethodTarget(source: string, method: string): { collection: string; methodCallIndex: number } | null {
   const escapedMethod = escapeRegExp(method);
-  const direct = new RegExp(`^db\\.([A-Za-z_$][\\w$]*)\\.${escapedMethod}\\s*\\(`).exec(source);
+  const direct = new RegExp(`^db\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*\\.\\s*${escapedMethod}\\s*\\(`).exec(source);
   if (direct) {
     return {
       collection: direct[1],
-      methodCallIndex: source.indexOf(`.${method}`, direct[0].length - `.${method}(`.length),
+      methodCallIndex: findChainedMethodCallIndex(source, method),
     };
   }
 
-  const getCollection = new RegExp(`^db\\.getCollection\\s*\\(\\s*(["'])(.*?)\\1\\s*\\)\\.${escapedMethod}\\s*\\(`).exec(source);
+  const getCollection = new RegExp(`^db\\s*\\.\\s*getCollection\\s*\\(\\s*(["'])(.*?)\\1\\s*\\)\\s*\\.\\s*${escapedMethod}\\s*\\(`).exec(source);
   if (getCollection) {
     return {
       collection: getCollection[2],
-      methodCallIndex: source.indexOf(`.${method}`, getCollection[0].length - `.${method}(`.length),
+      methodCallIndex: findChainedMethodCallIndex(source, method),
     };
   }
 
@@ -422,24 +444,23 @@ function readChainedIntegerArgument(source: string, name: string, fallback: numb
 }
 
 function readChainedCallArgument(source: string, name: string): string | undefined {
-  const call = `.${name}`;
-  let index = source.indexOf(call);
-  while (index >= 0) {
-    const afterName = index + call.length;
-    const openIndex = skipWhitespace(source, afterName);
-    if (source[openIndex] === "(") {
-      const closeIndex = findMatchingParen(source, openIndex);
-      if (closeIndex >= 0) return source.slice(openIndex + 1, closeIndex);
-    }
-    index = source.indexOf(call, afterName);
+  const pattern = chainedMethodCallPattern(name);
+  let match = pattern.exec(source);
+  while (match) {
+    const openIndex = source.indexOf("(", match.index);
+    const closeIndex = findMatchingParen(source, openIndex);
+    if (closeIndex >= 0) return source.slice(openIndex + 1, closeIndex);
+    match = pattern.exec(source);
   }
   return undefined;
 }
 
-function skipWhitespace(source: string, index: number) {
-  let cursor = index;
-  while (/\s/.test(source[cursor] || "")) cursor += 1;
-  return cursor;
+function findChainedMethodCallIndex(source: string, name: string): number {
+  return chainedMethodCallPattern(name).exec(source)?.index ?? -1;
+}
+
+function chainedMethodCallPattern(name: string): RegExp {
+  return new RegExp(`\\.\\s*${escapeRegExp(name)}\\s*\\(`, "g");
 }
 
 function splitTopLevel(source: string): string[] {

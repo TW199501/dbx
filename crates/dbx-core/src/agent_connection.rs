@@ -26,8 +26,8 @@ pub fn agent_connect_params(config: &ConnectionConfig, host: &str, port: u16, da
         postgres_like_agent_jdbc_connection_string(config, host, port, database)
     } else if config.db_type == DatabaseType::SapHana {
         sap_hana_jdbc_connection_string(config, host, port, database)
-    } else if config.db_type == DatabaseType::Trino {
-        trino_agent_jdbc_connection_string(config, host, port, database)
+    } else if matches!(config.db_type, DatabaseType::Trino | DatabaseType::PrestoSql) {
+        trino_like_jdbc_connection_string(config, host, port, database)
     } else if config.db_type == DatabaseType::H2 {
         h2_agent_jdbc_connection_string(config)
     } else {
@@ -35,6 +35,11 @@ pub fn agent_connect_params(config: &ConnectionConfig, host: &str, port: u16, da
     };
     let etcd_endpoints =
         if config.db_type == DatabaseType::Etcd { normalize_etcd_endpoints(config, host, port) } else { String::new() };
+    let zookeeper_connect_string = if config.db_type == DatabaseType::ZooKeeper {
+        normalize_zookeeper_connect_string(config, host, port)
+    } else {
+        String::new()
+    };
     let (agent_host, agent_port) = if is_h2_file_connection(config) { ("", 0) } else { (host, port) };
 
     serde_json::json!({
@@ -51,6 +56,7 @@ pub fn agent_connect_params(config: &ConnectionConfig, host: &str, port: u16, da
         "client_cert_path": config.client_cert_path,
         "client_key_path": config.client_key_path,
         "etcd_endpoints": etcd_endpoints,
+        "zookeeper_connect_string": zookeeper_connect_string,
         "gbase_server": config.gbase_server,
         "informix_server": config.informix_server,
         "jdbc_driver_class": config.jdbc_driver_class.as_deref().unwrap_or(""),
@@ -455,12 +461,17 @@ fn sap_hana_jdbc_connection_string(config: &ConnectionConfig, host: &str, port: 
     }
 }
 
-fn trino_agent_jdbc_connection_string(config: &ConnectionConfig, host: &str, port: u16, database: &str) -> String {
+pub fn trino_like_jdbc_connection_string(config: &ConnectionConfig, host: &str, port: u16, database: &str) -> String {
+    let jdbc_scheme = match config.db_type {
+        DatabaseType::PrestoSql => "presto",
+        _ => "trino",
+    };
+    let jdbc_prefix = format!("jdbc:{jdbc_scheme}:");
     let base = config
         .connection_string
         .as_deref()
         .map(str::trim)
-        .filter(|value| value.get(..11).is_some_and(|prefix| prefix.eq_ignore_ascii_case("jdbc:trino:")))
+        .filter(|value| value.get(..jdbc_prefix.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(&jdbc_prefix)))
         .map(|connection_string| {
             if host == config.host && port == config.port {
                 connection_string.to_string()
@@ -471,9 +482,9 @@ fn trino_agent_jdbc_connection_string(config: &ConnectionConfig, host: &str, por
         .unwrap_or_else(|| {
             let database = database.trim();
             if database.is_empty() {
-                format!("jdbc:trino://{host}:{port}")
+                format!("jdbc:{jdbc_scheme}://{host}:{port}")
             } else {
-                format!("jdbc:trino://{host}:{port}/{database}")
+                format!("jdbc:{jdbc_scheme}://{host}:{port}/{database}")
             }
         });
 
@@ -504,6 +515,16 @@ fn normalize_etcd_endpoints(config: &ConnectionConfig, host: &str, port: u16) ->
     }
     let scheme = if config.ssl { "https" } else { "http" };
     format!("{scheme}://{host}:{port}")
+}
+
+fn normalize_zookeeper_connect_string(config: &ConnectionConfig, host: &str, port: u16) -> String {
+    config
+        .connection_string
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{host}:{port}"))
 }
 
 fn normalize_agent_url_params(params: Option<&str>) -> &str {
@@ -562,6 +583,7 @@ mod tests {
             password: "secret".to_string(),
             database: database.map(str::to_string),
             visible_databases: None,
+            visible_schemas: None,
             attached_databases: Vec::new(),
             color: None,
             transport_layers: Vec::new(),
@@ -652,6 +674,27 @@ mod tests {
         assert_eq!(params["port"], 9092);
         assert_eq!(params["database"], "test");
         assert_eq!(params["connection_string"], "");
+    }
+
+    #[test]
+    fn zookeeper_agent_params_preserve_configured_connect_string() {
+        let mut cfg = config(DatabaseType::ZooKeeper, None);
+        cfg.connection_string = Some("zk-1:2181,zk-2:2181/app".to_string());
+
+        let params = agent_connect_params(&cfg, "127.0.0.1", 2181, "");
+
+        assert_eq!(params["connection_string"], "zk-1:2181,zk-2:2181/app");
+        assert_eq!(params["zookeeper_connect_string"], "zk-1:2181,zk-2:2181/app");
+    }
+
+    #[test]
+    fn zookeeper_agent_params_fall_back_to_host_port_connect_string() {
+        let cfg = config(DatabaseType::ZooKeeper, None);
+
+        let params = agent_connect_params(&cfg, "zk.local", 2281, "");
+
+        assert_eq!(params["connection_string"], "");
+        assert_eq!(params["zookeeper_connect_string"], "zk.local:2281");
     }
 
     #[test]
@@ -904,6 +947,30 @@ mod tests {
 
         assert_eq!(params["connection_string"], "jdbc:trino://trino.example.com:8080/hive");
         assert_eq!(params["ssl"], false);
+    }
+
+    #[test]
+    fn prestosql_jdbc_url_uses_presto_jdbc_scheme() {
+        let mut cfg = config(DatabaseType::PrestoSql, Some("hive/default"));
+        cfg.host = "presto.example.com".to_string();
+        cfg.port = 9090;
+
+        let params = agent_connect_params(&cfg, "presto.example.com", 9090, "hive/default");
+
+        assert_eq!(params["connection_string"], "jdbc:presto://presto.example.com:9090/hive/default");
+        assert_eq!(params["ssl"], false);
+    }
+
+    #[test]
+    fn prestosql_custom_jdbc_url_rewrites_forwarded_host() {
+        let mut cfg = config(DatabaseType::PrestoSql, Some("hive/default"));
+        cfg.host = "presto.internal".to_string();
+        cfg.port = 9090;
+        cfg.connection_string = Some("jdbc:presto://presto.internal:9090/hive/default?source=dbx".to_string());
+
+        let params = agent_connect_params(&cfg, "127.0.0.1", 19090, "hive/default");
+
+        assert_eq!(params["connection_string"], "jdbc:presto://127.0.0.1:19090/hive/default?source=dbx");
     }
 
     #[test]

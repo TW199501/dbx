@@ -79,6 +79,41 @@ pub async fn mongo_list_collections_core(
     }
 }
 
+pub async fn mongo_create_database_core(state: &AppState, connection_id: &str, database: &str) -> Result<(), String> {
+    ensure_document_pool(state, connection_id).await?;
+    let connections = state.connections.read().await;
+    match connections.get(connection_id).ok_or("Not found")? {
+        PoolKind::MongoDb(client) => mongo_driver::create_database(client, database).await,
+        PoolKind::Agent(_) => Err("MongoDB legacy agent does not support create database".to_string()),
+        _ => Err("Not a MongoDB connection".to_string()),
+    }
+}
+
+pub async fn mongo_drop_database_core(state: &AppState, connection_id: &str, database: &str) -> Result<(), String> {
+    ensure_document_pool(state, connection_id).await?;
+    let connections = state.connections.read().await;
+    match connections.get(connection_id).ok_or("Not found")? {
+        PoolKind::MongoDb(client) => mongo_driver::drop_database(client, database).await,
+        PoolKind::Agent(_) => Err("MongoDB legacy agent does not support drop database".to_string()),
+        _ => Err("Not a MongoDB connection".to_string()),
+    }
+}
+
+pub async fn mongo_drop_collection_core(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    collection: &str,
+) -> Result<(), String> {
+    ensure_document_pool(state, connection_id).await?;
+    let connections = state.connections.read().await;
+    match connections.get(connection_id).ok_or("Not found")? {
+        PoolKind::MongoDb(client) => mongo_driver::drop_collection(client, database, collection).await,
+        PoolKind::Agent(_) => Err("MongoDB legacy agent does not support drop collection".to_string()),
+        _ => Err("Not a MongoDB connection".to_string()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn document_find_documents_core(
     state: &AppState,

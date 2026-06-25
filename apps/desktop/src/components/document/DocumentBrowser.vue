@@ -16,6 +16,7 @@ import * as api from "@/lib/api";
 import { clampSearchSplitWidth } from "@/lib/dataGridSearchSplit";
 import { documentViewerFontStyle } from "@/lib/documentViewerFontStyle";
 import { buildDocumentFilterCondition, combineDocumentFilterConditions, currentDocumentFilterJson, defaultDocumentFilterRule, documentFilterModeNeedsValue, documentFilterModeOptions, documentStoreProviderFor, type DocumentFilterMode, type DocumentFilterRule } from "@/lib/documentStoreProvider";
+import { buildMongoInsertDocument, buildMongoUpdateDocument, formatMongoShellLiteral, parseMongoDocumentInputValue, type MongoInputValue } from "@/lib/mongoDocumentValues";
 import { normalizeResultPageSize } from "@/lib/paginationPageSize";
 import { useSettingsStore } from "@/stores/settingsStore";
 import JsonEditNode from "./JsonEditNode.vue";
@@ -86,6 +87,13 @@ type LocalFilterSummary = {
   columnName: string;
   values: string[];
   hiddenValueCount: number;
+};
+type DocumentGridChanges = {
+  dirtyRows: Map<number, Map<number, MongoInputValue>>;
+  deletedRows: Set<number>;
+  newRows: MongoInputValue[][];
+  columns: string[];
+  rows: MongoInputValue[][];
 };
 const documentFilterBuilderOpen = ref(false);
 const documentFilterRules = ref<DocumentFilterRule[]>([]);
@@ -226,34 +234,45 @@ function clearDocumentFilters(clearLocalFilter?: (columnIndex?: number) => void)
   applyFilter();
 }
 
-async function gridSave(changes: { dirtyRows: Map<number, Map<number, string | number | boolean | null>>; deletedRows: Set<number>; columns: string[]; rows: (string | number | boolean | null)[][] }) {
+function documentIdFromGridValue(value: MongoInputValue | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const parsed = parseMongoDocumentInputValue(value);
+  if (parsed === null || parsed === undefined) return null;
+  const id = typeof parsed === "object" ? JSON.stringify(parsed) : String(parsed);
+  return id.trim() ? id : null;
+}
+
+async function gridSave(changes: DocumentGridChanges) {
   const cols = changes.columns;
   const idColIdx = cols.indexOf("_id");
   if (idColIdx < 0) throw new Error("No _id column");
+  const isEs = documentStoreProvider.value.kind === "elasticsearch";
 
   for (const [rowIdx, dirtyCols] of changes.dirtyRows) {
     const row = changes.rows[rowIdx];
     const id = row?.[idColIdx];
     if (id == null) continue;
-    const doc = documents.value[rowIdx];
-    if (!doc) continue;
-    const updated = { ...doc };
-    for (const [colIdx, newVal] of dirtyCols) {
-      const col = cols[colIdx];
-      if (col === "_id") continue;
-      if (newVal === null) {
-        delete updated[col];
-      } else if (typeof newVal === "string") {
-        try {
-          updated[col] = JSON.parse(newVal);
-        } catch {
-          updated[col] = newVal;
+
+    if (isEs) {
+      const doc = documents.value[rowIdx];
+      if (!doc) continue;
+      const updated = { ...doc };
+      for (const [colIdx, newVal] of dirtyCols) {
+        const col = cols[colIdx];
+        if (col === "_id") continue;
+        if (newVal === null) {
+          delete updated[col];
+        } else {
+          updated[col] = parseMongoDocumentInputValue(newVal);
         }
-      } else {
-        updated[col] = newVal;
       }
+      await api.mongoUpdateDocument(props.connectionId, props.database, props.collection, String(id), JSON.stringify(updated));
+      continue;
     }
-    await api.mongoUpdateDocument(props.connectionId, props.database, props.collection, String(id), JSON.stringify(updated));
+
+    const updateDoc = buildMongoUpdateDocument(dirtyCols, cols);
+    if (Object.keys(updateDoc).length === 0) continue;
+    await api.mongoUpdateDocument(props.connectionId, props.database, props.collection, String(id), JSON.stringify(updateDoc));
   }
 
   for (const rowIdx of changes.deletedRows) {
@@ -261,6 +280,20 @@ async function gridSave(changes: { dirtyRows: Map<number, Map<number, string | n
     const id = row?.[idColIdx];
     if (id == null) continue;
     await api.mongoDeleteDocument(props.connectionId, props.database, props.collection, String(id));
+  }
+
+  for (const newRow of changes.newRows) {
+    const doc = buildMongoInsertDocument(newRow, cols);
+    if (isEs) {
+      const id = documentIdFromGridValue(newRow[idColIdx]);
+      if (id) {
+        await api.mongoUpdateDocument(props.connectionId, props.database, props.collection, id, JSON.stringify(doc));
+      } else {
+        await api.mongoInsertDocument(props.connectionId, props.database, props.collection, JSON.stringify(doc));
+      }
+      continue;
+    }
+    await api.mongoInsertDocument(props.connectionId, props.database, props.collection, JSON.stringify(doc));
   }
 
   await load();
@@ -279,51 +312,11 @@ function mongoIdPreview(val: unknown): string {
   return formatMongoValue(val);
 }
 
-function buildUpdateDoc(changes: Map<number, string | number | boolean | null>, columns: string[]): Record<string, unknown> {
-  const setFields: Record<string, unknown> = {};
-  const unsetFields: Record<string, unknown> = {};
-  for (const [colIdx, newVal] of changes) {
-    const col = columns[colIdx];
-    if (!col || col === "_id") continue;
-    if (newVal === null) {
-      unsetFields[col] = "";
-    } else if (typeof newVal === "string") {
-      try {
-        setFields[col] = JSON.parse(newVal);
-      } catch {
-        setFields[col] = newVal;
-      }
-    } else {
-      setFields[col] = newVal;
-    }
-  }
-  const doc: Record<string, unknown> = {};
-  if (Object.keys(setFields).length > 0) doc.$set = setFields;
-  if (Object.keys(unsetFields).length > 0) doc.$unset = unsetFields;
-  return doc;
+function elasticsearchPathIdPreview(id: string): string {
+  return encodeURIComponent(id);
 }
 
-function buildNewDoc(newRow: (string | number | boolean | null)[], columns: string[]): Record<string, unknown> {
-  const doc: Record<string, unknown> = {};
-  for (let ci = 0; ci < columns.length; ci++) {
-    const col = columns[ci];
-    if (!col || col === "_id") continue;
-    const val = newRow[ci];
-    if (val === null) continue;
-    if (typeof val === "string") {
-      try {
-        doc[col] = JSON.parse(val);
-      } catch {
-        doc[col] = val;
-      }
-    } else {
-      doc[col] = val;
-    }
-  }
-  return doc;
-}
-
-async function previewDocumentChanges(changes: { dirtyRows: Map<number, Map<number, string | number | boolean | null>>; deletedRows: Set<number>; newRows: (string | number | boolean | null)[][]; columns: string[]; rows: (string | number | boolean | null)[][] }): Promise<string[]> {
+async function previewDocumentChanges(changes: DocumentGridChanges): Promise<string[]> {
   const { dirtyRows, deletedRows, newRows, columns, rows } = changes;
   const idColIdx = columns.indexOf("_id");
   const stmts: string[] = [];
@@ -334,11 +327,12 @@ async function previewDocumentChanges(changes: { dirtyRows: Map<number, Map<numb
     const row = rows[rowIdx];
     const id = row?.[idColIdx];
     if (id == null) continue;
-    const updateDoc = buildUpdateDoc(dirtyCols, columns);
     if (isEs) {
-      stmts.push(`POST /${coll}/_update/${JSON.stringify(String(id))}\n${JSON.stringify({ doc: updateDoc.$set ?? updateDoc }, null, 2)}`);
+      const updateDoc = buildMongoUpdateDocument(dirtyCols, columns);
+      stmts.push(`POST /${coll}/_update/${elasticsearchPathIdPreview(String(id))}\n${JSON.stringify({ doc: updateDoc.$set ?? updateDoc }, null, 2)}`);
     } else {
-      stmts.push(`db.${coll}.updateOne({_id: ${mongoIdPreview(id)}}, ${JSON.stringify(updateDoc)})`);
+      const updateDoc = buildMongoUpdateDocument(dirtyCols, columns);
+      stmts.push(`db.${coll}.updateOne({_id: ${mongoIdPreview(id)}}, ${formatMongoShellLiteral(updateDoc)})`);
     }
   }
 
@@ -347,18 +341,23 @@ async function previewDocumentChanges(changes: { dirtyRows: Map<number, Map<numb
     const id = row?.[idColIdx];
     if (id == null) continue;
     if (isEs) {
-      stmts.push(`DELETE /${coll}/_doc/${JSON.stringify(String(id))}`);
+      stmts.push(`DELETE /${coll}/_doc/${elasticsearchPathIdPreview(String(id))}`);
     } else {
       stmts.push(`db.${coll}.deleteOne({_id: ${mongoIdPreview(id)}})`);
     }
   }
 
   for (const newRow of newRows) {
-    const doc = buildNewDoc(newRow, columns);
+    const doc = buildMongoInsertDocument(newRow, columns);
     if (isEs) {
-      stmts.push(`POST /${coll}/_doc\n${JSON.stringify(doc, null, 2)}`);
+      const id = idColIdx >= 0 ? documentIdFromGridValue(newRow[idColIdx]) : null;
+      if (id) {
+        stmts.push(`PUT /${coll}/_doc/${elasticsearchPathIdPreview(id)}\n${JSON.stringify(doc, null, 2)}`);
+      } else {
+        stmts.push(`POST /${coll}/_doc\n${JSON.stringify(doc, null, 2)}`);
+      }
     } else {
-      stmts.push(`db.${coll}.insertOne(${JSON.stringify(doc)})`);
+      stmts.push(`db.${coll}.insertOne(${formatMongoShellLiteral(doc)})`);
     }
   }
 
@@ -592,14 +591,7 @@ function formatForEdit(value: unknown): string {
 }
 
 function parseFieldValue(raw: string): unknown {
-  const trimmed = raw.trim();
-  if (trimmed === "NULL") return null;
-  if (/^(true|false|null)$/i.test(trimmed)) return JSON.parse(trimmed.toLowerCase());
-  if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  if (trimmed.startsWith("{") || trimmed.startsWith("[") || trimmed.startsWith('"')) {
-    return JSON.parse(trimmed);
-  }
-  return raw;
+  return parseMongoDocumentInputValue(raw);
 }
 
 function buildObjectFromNodes(nodes: EditNode[], path: string): JsonRecord {
@@ -832,11 +824,14 @@ function resetTableSearchSplitWidth() {
               {{ t("grid.noSearchResults") }}
             </div>
           </div>
-          <div class="flex items-center justify-between gap-2 border-t bg-muted/30 px-2 py-1.5">
-            <span class="text-[11px] text-muted-foreground">{{ t("grid.columnVisibilityHint") }}</span>
-            <div class="flex items-center gap-1">
+          <div class="flex flex-col gap-1 border-t bg-muted/30 px-2 py-1.5">
+            <span class="text-[11px] leading-4 text-muted-foreground">{{ t("grid.columnVisibilityHint") }}</span>
+            <div class="flex items-center justify-end gap-1">
               <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" :disabled="(dataGridRef?.displayableColumnCount ?? 0) <= 1" @click="dataGridRef?.invertColumnVisibility()">
                 {{ t("grid.invertColumnVisibility") }}
+              </Button>
+              <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" :disabled="!dataGridRef?.hasCustomColumnOrder" @click="dataGridRef?.resetColumnOrder()">
+                {{ t("grid.resetColumnOrder") }}
               </Button>
               <Button variant="ghost" size="sm" class="h-7 px-2 text-xs" :disabled="(dataGridRef?.hiddenColumnCount ?? 0) === 0" @click="dataGridRef?.showAllColumns()">
                 {{ t("grid.showAllColumns") }}

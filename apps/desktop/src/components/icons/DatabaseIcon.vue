@@ -44,10 +44,11 @@ const assetIcons: Record<string, string> = {
   dm: "dm",
   dameng: "dm",
   presto: "presto",
+  prestosql: "presto",
   hive: "hive",
   apache_kylin: "apache_kylin",
   sundb: "sundb",
-  trino: "presto",
+  trino: "trino",
   kylin: "apache_kylin",
   cockroachdb: "cockroachdb",
   db2: "db2",
@@ -78,10 +79,13 @@ const assetIcons: Record<string, string> = {
   etcd: "etcd",
   qdrant: "qdrant",
   milvus: "milvus.png",
+  weaviate: "weaviate.png",
   mq: "pulsar",
   pulsar: "pulsar",
+  nacos: "nacos.png",
   iris: "iris.png",
   influxdb: "influxdb",
+  zookeeper: "zookeeper",
 };
 
 const letterIcons: Record<string, { letter: string; color: string }> = {};

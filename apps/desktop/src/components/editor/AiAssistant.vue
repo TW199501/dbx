@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import LightDropdown from "@/components/ui/LightDropdown.vue";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useTheme } from "@/composables/useTheme";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -34,6 +35,7 @@ import { parseExplainResult, type ParsedExplainPlan } from "@/lib/explainPlan";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatAiTableMention, parseAiTableMentions, type AiTableMention } from "@/lib/aiTableMentions";
 import { isAiPromptImeCompositionEvent, shouldSubmitAiPromptOnKeydown } from "@/lib/aiPromptKeyboard";
+import { looksLikeActionProposal, containsChinese } from "@/lib/aiProposalDetect";
 
 const { t } = useI18n();
 const settings = useSettingsStore();
@@ -79,19 +81,14 @@ const promptTextareaRef = ref<HTMLTextAreaElement | null>(null);
 const promptCompositionActive = ref(false);
 const shikiCodeHighlighter = ref<AiCodeHighlighter>();
 const agentTokens = ref<{ input: number; output: number } | null>(null);
+const promptHistory = ref<string[]>([]);
+const historyIndex = ref(-1);
+const draftBeforeHistory = ref("");
 
 // Inline model selector
 const modelOptions = ref<AiModelInfo[]>([]);
 const modelLoading = ref(false);
 let modelRequestToken = 0;
-
-const currentModelLabel = computed(() => {
-  const currentModel = settings.aiConfig.model;
-  const found = modelOptions.value.find((m) => m.id === currentModel);
-  const raw = found?.displayName || currentModel;
-  if (!raw) return t("ai.model");
-  return raw.length > 20 ? raw.slice(0, 18) + "…" : raw;
-});
 
 function normalizeModelOptions(models: AiModelInfo[]): AiModelInfo[] {
   const seen = new Set<string>();
@@ -126,18 +123,18 @@ function handleModelSelect(modelId: string) {
   settings.updateAiConfig({ model: modelId });
 }
 
-const modelDropdownItems = computed(() => {
+const modelOptionIds = computed(() => {
   const currentModel = settings.aiConfig.model;
-  const items = modelOptions.value.map((m) => ({
-    value: m.id,
-    label: m.displayName || m.id,
-    title: m.id,
-  }));
-  if (currentModel && !items.some((item) => item.value === currentModel)) {
-    items.unshift({ value: currentModel, label: currentModel, title: currentModel });
+  const ids = modelOptions.value.map((model) => model.id);
+  if (currentModel && !ids.includes(currentModel)) {
+    return [currentModel, ...ids];
   }
-  return items;
+  return ids;
 });
+
+function displayModelName(modelId: string) {
+  return modelOptions.value.find((model) => model.id === modelId)?.displayName || modelId;
+}
 
 /** Deferred context compaction info; applied after stream ends to avoid shifting assistantIdx. */
 const pendingCompaction = ref<{ summary: string; compactedMessages: number } | null>(null);
@@ -224,6 +221,37 @@ const isWaitingForFirstDelta = computed(() => {
   const last = messages.value[messages.value.length - 1];
   return isGenerating.value && last?.role === "assistant" && !last.content && !last.reasoning;
 });
+
+/**
+ * The last assistant message whose final line looks like an action
+ * proposal question. Used to render an inline "Yes / No" confirmation bar
+ * so the user can answer without typing. `null` while the assistant is
+ * still generating or when no such message exists.
+ */
+const proposalConfirmMessage = computed<ChatMessage | null>(() => {
+  if (isGenerating.value) return null;
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const msg = messages.value[i];
+    if (msg.kind === "contextSummary") continue;
+    if (msg.role !== "assistant") return null;
+    if (!msg.content) return null;
+    return looksLikeActionProposal(msg.content) ? msg : null;
+  }
+  return null;
+});
+
+function sendProposalReply(positive: boolean) {
+  // Disable while a stream is in flight or no proposal is currently active.
+  if (isGenerating.value) return;
+  const target = proposalConfirmMessage.value;
+  if (!target) return;
+  const isZh = containsChinese(target.content || "");
+  const replyZh = positive ? "请执行上面你刚提议的操作，不要再反问确认。" : "不用执行上面提到的操作，继续当前对话。";
+  const replyEn = positive ? "Execute the action you just proposed above; do not ask for confirmation again." : "Do not execute the action mentioned above; continue the current conversation.";
+  prompt.value = isZh ? replyZh : replyEn;
+  // Use the existing send pipeline so the message is added to history, persisted, etc.
+  send();
+}
 
 const activePlaceholder = computed(() => `${t(`ai.placeholders.${activeAction.value}`)} ${t("ai.tableMentionPlaceholderHint")}`);
 const activeModeHint = computed(() => t(`ai.modeHints.${assistantMode.value}`));
@@ -622,6 +650,43 @@ function onPromptKeydown(event: KeyboardEvent) {
     }
   }
 
+  // Prompt history navigation (↑/↓ when not in @mention dropdown)
+  if (event.key === "ArrowUp" && promptHistory.value.length > 0) {
+    const textarea = promptTextareaRef.value;
+    // Only enter history when cursor is on the first line
+    if (textarea && textarea.selectionStart === 0 && textarea.selectionEnd === 0) {
+      event.preventDefault();
+      if (historyIndex.value === -1) {
+        draftBeforeHistory.value = prompt.value;
+      }
+      const nextIndex = historyIndex.value + 1;
+      if (nextIndex < promptHistory.value.length) {
+        historyIndex.value = nextIndex;
+        prompt.value = promptHistory.value[nextIndex];
+        nextTick(() => {
+          textarea.selectionStart = textarea.selectionEnd = prompt.value.length;
+        });
+      }
+      return;
+    }
+  }
+  if (event.key === "ArrowDown" && historyIndex.value >= 0) {
+    event.preventDefault();
+    const nextIndex = historyIndex.value - 1;
+    if (nextIndex >= 0) {
+      historyIndex.value = nextIndex;
+      prompt.value = promptHistory.value[nextIndex];
+    } else {
+      historyIndex.value = -1;
+      prompt.value = draftBeforeHistory.value;
+    }
+    nextTick(() => {
+      const textarea = promptTextareaRef.value;
+      if (textarea) textarea.selectionStart = textarea.selectionEnd = prompt.value.length;
+    });
+    return;
+  }
+
   if (shouldSubmitAiPromptOnKeydown(event, promptCompositionActive.value)) {
     event.preventDefault();
     send();
@@ -642,6 +707,13 @@ async function send() {
   const displayText = [selectedMentions.value.map((mention) => mention.raw).join(" "), text].filter(Boolean).join(" ");
 
   messages.value.push({ role: "user", content: displayText });
+  // Save to prompt history (deduplicate consecutive duplicates)
+  if (displayText && promptHistory.value[0] !== displayText) {
+    promptHistory.value.unshift(displayText);
+    if (promptHistory.value.length > 100) promptHistory.value.length = 100;
+  }
+  historyIndex.value = -1;
+  draftBeforeHistory.value = "";
   prompt.value = "";
   selectedMentions.value = [];
   scrollToBottom();
@@ -781,6 +853,8 @@ async function copyCode(code: string, key: string) {
 function clearMessages() {
   messages.value = [];
   conversationId.value = "";
+  historyIndex.value = -1;
+  draftBeforeHistory.value = "";
 }
 
 async function persistConversation() {
@@ -1064,6 +1138,16 @@ const messageRenderer = computed(() => {
                   <pre class="ai-code-block whitespace-pre-wrap break-words p-3 text-xs leading-relaxed text-zinc-900 dark:text-zinc-100"><code v-html="seg.html"></code></pre>
                 </div>
               </template>
+              <div v-if="msg === proposalConfirmMessage" class="mt-2 flex gap-2" :title="t('ai.proposalConfirmTitle')">
+                <Button size="sm" variant="default" class="h-7 gap-1 text-[11px]" @click="sendProposalReply(true)">
+                  <Check class="h-3 w-3" />
+                  {{ t("ai.proposalConfirmYes") }}
+                </Button>
+                <Button size="sm" variant="outline" class="h-7 gap-1 text-[11px]" @click="sendProposalReply(false)">
+                  <X class="h-3 w-3" />
+                  {{ t("ai.proposalConfirmNo") }}
+                </Button>
+              </div>
             </div>
           </div>
         </template>
@@ -1187,24 +1271,49 @@ const messageRenderer = computed(() => {
             @compositionend="promptCompositionActive = false"
             @keydown="onPromptKeydown"
           />
-          <div class="flex items-center gap-1.5">
-            <LightDropdown v-model="assistantMode" :items="assistantModeItems" :aria-label="activeModeHint" item-class="text-xs px-2" />
-            <LightDropdown :model-value="activeAction" :items="actionMenuItems" content-class="w-max min-w-0" item-class="text-xs px-2" @update:model-value="(value) => selectAction(value as AiAction)" />
-            <span class="flex-1" />
+          <div class="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-hidden">
             <LightDropdown
+              v-model="assistantMode"
+              :items="assistantModeItems"
+              :aria-label="activeModeHint"
+              trigger-class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+              item-class="text-xs px-2"
+            />
+            <LightDropdown
+              :model-value="activeAction"
+              :items="actionMenuItems"
+              content-class="w-max min-w-0"
+              trigger-class="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+              item-class="text-xs px-2"
+              @update:model-value="(value) => selectAction(value as AiAction)"
+            />
+            <span class="min-w-0 flex-1" />
+            <SearchableSelect
               v-if="settings.isConfigured()"
               :model-value="settings.aiConfig.model"
-              :items="modelDropdownItems"
-              :trigger-title="settings.aiConfig.model"
-              :aria-label="t('ai.model')"
-              :trigger-label="currentModelLabel"
-              trigger-class="flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground truncate max-w-[130px]"
+              :options="modelOptionIds"
+              :placeholder="t('ai.browseModels')"
+              :search-placeholder="t('ai.searchModels')"
+              :empty-text="t('ai.modelListHint')"
+              :loading-text="t('ai.loadingModels')"
+              :loading="modelLoading"
+              :display-name="displayModelName"
+              trigger-class="min-w-0 w-auto max-w-[220px] shrink justify-end rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+              content-class="w-72"
               item-class="text-xs px-2"
-              :match-trigger-width="false"
-              content-class="w-max min-w-36 max-w-64"
-              check-position="right"
               @update:model-value="handleModelSelect"
-            />
+              @update:open="(open: boolean) => open && fetchModelOptions()"
+            >
+              <template #trigger-label="{ label, loading }">
+                <span class="min-w-0 truncate">{{ loading ? t("ai.loadingModels") : label }}</span>
+              </template>
+              <template #option-label="{ option, label }">
+                <span class="flex min-w-0 flex-col">
+                  <span class="truncate">{{ label }}</span>
+                  <span v-if="label !== option" class="truncate text-[11px] text-muted-foreground">{{ option }}</span>
+                </span>
+              </template>
+            </SearchableSelect>
             <button v-if="isGenerating" class="h-7 w-7 shrink-0 rounded-full bg-destructive text-destructive-foreground flex items-center justify-center" :title="t('ai.stopGenerating')" @click="cancelStream">
               <Square class="h-3.5 w-3.5" />
             </button>

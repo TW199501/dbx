@@ -65,7 +65,7 @@ const exportCancelled = ref(false);
 const pendingPrefillTable = ref("");
 const pendingPrefillTables = ref<string[]>([]);
 
-const sqlConnections = computed(() => store.connections.filter((c) => !["redis", "mongodb", "elasticsearch", "qdrant", "milvus", "etcd"].includes(c.db_type)));
+const sqlConnections = computed(() => store.connections.filter((c) => !["redis", "mongodb", "elasticsearch", "qdrant", "milvus", "weaviate", "etcd", "zookeeper", "mq", "nacos"].includes(c.db_type)));
 
 const canExport = computed(() => connectionId.value && database.value && schema.value && !loadingTables.value && !tableError.value && (tables.value.length === 0 || selectedTables.value.length > 0) && (includeStructure.value || includeData.value || includeObjects.value) && !isExporting.value);
 
@@ -418,7 +418,7 @@ watch(
           <!-- Options -->
           <div class="space-y-2.5 pt-1">
             <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              {{ t("settings.options") }}
+              {{ t("databaseExport.options") }}
             </div>
             <div class="flex items-center gap-2 cursor-pointer text-xs" @click="includeStructure = !includeStructure">
               <CheckSquare v-if="includeStructure" class="w-3.5 h-3.5 text-primary shrink-0" />

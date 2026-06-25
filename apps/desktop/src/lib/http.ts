@@ -1,9 +1,12 @@
-﻿import type {
+import type {
   ConnectionConfig,
   DatabaseInfo,
+  SchemaInfo,
   LinkedServerInfo,
   TableInfo,
   ObjectInfo,
+  CompletionAssistantRequest,
+  CompletionAssistantResponse,
   ObjectStatistics,
   ObjectSource,
   ObjectSourceKind,
@@ -49,9 +52,12 @@ import type {
   RedisValue,
   RedisScanResult,
   RedisCommandResult,
+  RedisSlowlogEntry,
+  RedisNodeEndpoint,
   KvValue,
   KvListPrefixResponse,
   KvGetResponse,
+  KvPutOptions,
   KvPutResponse,
   KvDeleteResponse,
   MongoDocumentResult,
@@ -69,6 +75,7 @@ import type {
   ExportProgress,
   TableExportRequest,
   TableExportProgress,
+  QueryResultExportRequest,
   TableCsvExportOptions,
   XlsxCellValue,
   QueryPaginationExecutionPlanOptions,
@@ -92,6 +99,28 @@ import type { DatabaseNameSqlOptions, DropTableChildObjectSqlOptions, DropObject
 import type { BuildDatabaseSqlExportOptions, BuildExportInsertStatementsOptions } from "@/lib/databaseExport";
 import type { DataCompareFromTablesOptions, DataCompareFromTablesPreparation, DataCompareSyncPlan, DataCompareSyncPlanOptions, DataComparePreparation, DataComparePreparationOptions } from "@/lib/dataCompare";
 import type { DataGridSavePreparation } from "./tauri";
+import type {
+  NacosConfigHistoryKey,
+  NacosConfigHistoryList,
+  NacosConfigHistoryQuery,
+  NacosConfigItem,
+  NacosConfigKey,
+  NacosConfigList,
+  NacosConfigQuery,
+  NacosConfigRollbackRequest,
+  NacosConfigUpsert,
+  NacosConnectionInfo,
+  NacosInstanceInfo,
+  NacosInstanceQuery,
+  NacosInstanceUpdate,
+  NacosNamespaceCreate,
+  NacosNamespaceInfo,
+  NacosNamespaceUpdate,
+  NacosRawRequest,
+  NacosRawResponse,
+  NacosServiceList,
+  NacosServiceQuery,
+} from "@/types/nacos";
 import { safeLocalStorageGet, safeLocalStorageSet } from "@/lib/safeStorage";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +131,8 @@ const DESKTOP_SETTINGS_STORAGE_KEY = "dbx-desktop-settings";
 const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   show_tray_icon: true,
   icon_theme: "default",
+  quit_on_close: false,
+  close_action_prompted: false,
   debug_logging_enabled: false,
   saved_sql_sync_dir: null,
   driver_store_dir: null,
@@ -132,7 +163,7 @@ async function del<T>(url: string): Promise<T> {
   return res.json();
 }
 
-function qs(params: Record<string, string | number | undefined>): string {
+function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null) sp.set(k, String(v));
@@ -158,6 +189,10 @@ export async function connectionFinalProxyPort(config: ConnectionConfig): Promis
 
 export async function disconnectDb(connectionId: string): Promise<void> {
   return post("/api/connection/disconnect", { connectionId });
+}
+
+export async function checkConnectionHealth(connectionId: string): Promise<void> {
+  return post("/api/connection/check-health", { connectionId });
 }
 
 export async function closeDatabaseConnection(connectionId: string, database: string): Promise<boolean> {
@@ -218,6 +253,10 @@ export async function importJdbcDrivers(pathsOrFiles: (string | File)[]): Promis
 
 export async function installJdbcDriverFromMaven(coordinate: string, repositories: string[] = []): Promise<JdbcDriverInfo[]> {
   return post("/api/jdbc/drivers/maven", { coordinate, repositories });
+}
+
+export async function installPrestoSqlJdbcDriver(): Promise<JdbcDriverInfo[]> {
+  return post("/api/jdbc/drivers/prestosql", {});
 }
 
 export async function deleteJdbcDriver(path: string): Promise<JdbcDriverInfo[]> {
@@ -391,6 +430,10 @@ export async function revealPathInFileManager(_path: string): Promise<void> {
   throw new Error("Reveal in file manager is only available in the desktop app.");
 }
 
+export async function isSqliteDatabaseFile(_path: string): Promise<boolean> {
+  return false;
+}
+
 export async function backupSqliteDatabase(_connectionId: string, _destinationPath: string): Promise<void> {
   throw new Error("SQLite backup is only available in the desktop app.");
 }
@@ -439,8 +482,17 @@ export async function listSchemas(connectionId: string, database: string): Promi
   return get(`/api/schema/schemas?${qs({ connection_id: connectionId, database })}`);
 }
 
+export async function listSchemaInfos(connectionId: string, database: string): Promise<SchemaInfo[]> {
+  const schemas = await listSchemas(connectionId, database);
+  return schemas.map((name) => ({ name, comment: null }));
+}
+
 export async function listTables(connectionId: string, database: string, schema: string, filter?: string, limit?: number, offset?: number, objectTypes?: SidebarObjectKind[]): Promise<TableInfo[]> {
   return get(`/api/schema/tables?${qs({ connection_id: connectionId, database, schema, filter, limit, offset, object_types: objectTypes?.join(",") })}`);
+}
+
+export async function getTableComment(_connectionId: string, _database: string, _schema: string, _table: string): Promise<string | null> {
+  throw new Error("Table comment lookup is not available in the web backend");
 }
 
 export async function listObjects(connectionId: string, database: string, schema: string, objectTypes?: SidebarObjectKind[]): Promise<ObjectInfo[]> {
@@ -460,6 +512,10 @@ export async function listObjectStatistics(connectionId: string, database: strin
 
 export async function listCompletionObjects(connectionId: string, database: string, schema: string): Promise<ObjectInfo[]> {
   return get(`/api/schema/completion-objects?${qs({ connection_id: connectionId, database, schema })}`);
+}
+
+export async function completionAssistantSearch(request: CompletionAssistantRequest): Promise<CompletionAssistantResponse> {
+  return post("/api/schema/completion-assistant", request);
 }
 
 export async function getObjectSource(connectionId: string, database: string, schema: string, name: string, objectType: ObjectSourceKind): Promise<ObjectSource> {
@@ -508,7 +564,7 @@ export async function listFunctions(connectionId: string, database: string, sche
 }
 
 export async function listSequences(connectionId: string, database: string, schema: string, withLastValues: boolean): Promise<SequenceInfo[]> {
-  return get(`/api/schema/sequences?${qs({ connection_id: connectionId, database, schema, with_last_values: withLastValues ? 1 : 0 })}`);
+  return get(`/api/schema/sequences?${qs({ connection_id: connectionId, database, schema, with_last_values: withLastValues })}`);
 }
 
 export async function listRules(connectionId: string, database: string, schema: string): Promise<RuleInfo[]> {
@@ -911,6 +967,8 @@ export interface DriverStoreMigrationResult {
   driver_store_dir: string | null;
   plugin_store_dir: string | null;
   agent_store_dir: string | null;
+  plugins_dir: string;
+  agents_dir: string;
   migrated_plugins: boolean;
   migrated_agents: boolean;
 }
@@ -1059,6 +1117,10 @@ export async function pendingOpenConnectionLinks(): Promise<string[]> {
 
 export async function readExternalSqlFile(_path: string): Promise<string> {
   throw new Error("Opening external SQL file paths is only available in the desktop app");
+}
+
+export async function writeExternalSqlFile(_path: string, _content: string): Promise<void> {
+  throw new Error("Saving external SQL file paths is only available in the desktop app");
 }
 
 // ---------------------------------------------------------------------------
@@ -1268,6 +1330,64 @@ export async function cancelTableExport(exportId: string): Promise<void> {
   return post("/api/export/table/cancel", { exportId });
 }
 
+export async function startQueryResultExport(request: QueryResultExportRequest, onProgress: (progress: TableExportProgress) => void): Promise<TableExportProgress> {
+  const { exportId } = request;
+
+  return new Promise((resolve, reject) => {
+    let started = false;
+    let settled = false;
+    const eventSource = new EventSource(`/api/export/query-result/progress/${exportId}`);
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      eventSource.close();
+      callback();
+    };
+
+    eventSource.onopen = () => {
+      if (started) return;
+      started = true;
+      post("/api/export/query-result", { request }).catch((error) => {
+        finish(() => reject(error));
+      });
+    };
+
+    eventSource.onmessage = (event) => {
+      const progress: TableExportProgress = JSON.parse(event.data);
+      onProgress(progress);
+      if (progress.status === "Done" || progress.status === "Error" || progress.status === "Cancelled") {
+        if (progress.status === "Error") {
+          finish(() => reject(new Error(progress.errorMessage || "Export failed")));
+        } else if (progress.status === "Done") {
+          downloadQueryResultExportFile(exportId, request.format);
+          finish(() => resolve(progress));
+        } else {
+          finish(() => resolve(progress));
+        }
+      }
+    };
+
+    eventSource.onerror = () => {
+      finish(() => reject(new Error("Export progress connection lost")));
+    };
+  });
+}
+
+function downloadQueryResultExportFile(exportId: string, format: string): void {
+  const a = document.createElement("a");
+  a.href = `/api/export/query-result/download/${exportId}`;
+  a.download = `query_result_export_${exportId}.${format}`;
+  a.click();
+}
+
+export async function cancelQueryResultExport(exportId: string, executionId?: string): Promise<void> {
+  return post("/api/export/query-result/cancel", {
+    exportId,
+    ...(executionId ? { executionId } : {}),
+  });
+}
+
 export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[]): Promise<void> {
   const { formatCsv } = await import("./exportFormats");
   const content = formatCsv(columns, rows as (string | number | boolean | null)[][]);
@@ -1352,8 +1472,8 @@ export async function redisScanKeys(connectionId: string, db: number, cursor: nu
   return post("/api/redis/scan-keys", { connectionId, db, cursor, pattern, count });
 }
 
-export async function redisScanKeysBatch(connectionId: string, db: number, cursor: number, pattern: string, count: number, maxIterations: number): Promise<RedisScanResult> {
-  return post("/api/redis/scan-keys-batch", { connectionId, db, cursor, pattern, count, maxIterations });
+export async function redisScanKeysBatch(connectionId: string, db: number, cursor: number, pattern: string, count: number, maxIterations: number, includeTypes = true): Promise<RedisScanResult> {
+  return post("/api/redis/scan-keys-batch", { connectionId, db, cursor, pattern, count, maxIterations, includeTypes });
 }
 
 export async function redisScanValues(connectionId: string, db: number, cursor: number, pattern: string, query: string, count: number, includeKeyMatches = false): Promise<RedisScanResult> {
@@ -1444,6 +1564,14 @@ export async function redisPubSubPublish(connectionId: string, db: number, chann
   return post("/api/redis/pubsub/publish", { connectionId, db, channel, message });
 }
 
+export async function redisSlowlogGet(connectionId: string, count: number, nodeHost?: string, nodePort?: number): Promise<RedisSlowlogEntry[]> {
+  return post("/api/redis/slowlog-get", { connectionId, count, nodeHost, nodePort });
+}
+
+export async function redisClusterMasterNodes(connectionId: string): Promise<RedisNodeEndpoint[]> {
+  return post("/api/redis/cluster-master-nodes", { connectionId });
+}
+
 // ---------------------------------------------------------------------------
 // etcd
 // ---------------------------------------------------------------------------
@@ -1465,6 +1593,90 @@ export async function etcdDelete(connectionId: string, key: string): Promise<KvD
 }
 
 // ---------------------------------------------------------------------------
+// ZooKeeper
+// ---------------------------------------------------------------------------
+
+export async function zookeeperListPrefix(connectionId: string, prefix: string, limit: number, continuation?: string | null): Promise<KvListPrefixResponse> {
+  return post("/api/zookeeper/list-prefix", { connectionId, prefix, limit, continuation });
+}
+
+export async function zookeeperGet(connectionId: string, key: string): Promise<KvGetResponse> {
+  return post("/api/zookeeper/get", { connectionId, key });
+}
+
+export async function zookeeperPut(connectionId: string, key: string, value: KvValue, options?: KvPutOptions | null): Promise<KvPutResponse> {
+  return post("/api/zookeeper/put", { connectionId, key, value, options: options ?? null });
+}
+
+export async function zookeeperDelete(connectionId: string, key: string): Promise<KvDeleteResponse> {
+  return post("/api/zookeeper/delete", { connectionId, key });
+}
+
+// ---------------------------------------------------------------------------
+// Nacos
+// ---------------------------------------------------------------------------
+
+export async function nacosTestConnection(connectionId: string): Promise<NacosConnectionInfo> {
+  return post("/api/nacos/test-connection", { connectionId });
+}
+
+export async function nacosListNamespaces(connectionId: string): Promise<NacosNamespaceInfo[]> {
+  return post("/api/nacos/namespaces/list", { connectionId });
+}
+
+export async function nacosCreateNamespace(connectionId: string, req: NacosNamespaceCreate): Promise<void> {
+  return post("/api/nacos/namespaces/create", { connectionId, req });
+}
+
+export async function nacosUpdateNamespace(connectionId: string, req: NacosNamespaceUpdate): Promise<void> {
+  return post("/api/nacos/namespaces/update", { connectionId, req });
+}
+
+export async function nacosListConfigs(connectionId: string, query: NacosConfigQuery): Promise<NacosConfigList> {
+  return post("/api/nacos/configs/list", { connectionId, query });
+}
+
+export async function nacosGetConfig(connectionId: string, key: NacosConfigKey): Promise<NacosConfigItem> {
+  return post("/api/nacos/configs/get", { connectionId, key });
+}
+
+export async function nacosPublishConfig(connectionId: string, req: NacosConfigUpsert): Promise<void> {
+  return post("/api/nacos/configs/publish", { connectionId, req });
+}
+
+export async function nacosDeleteConfig(connectionId: string, key: NacosConfigKey): Promise<void> {
+  return post("/api/nacos/configs/delete", { connectionId, key });
+}
+
+export async function nacosListConfigHistory(connectionId: string, query: NacosConfigHistoryQuery): Promise<NacosConfigHistoryList> {
+  return post("/api/nacos/configs/history/list", { connectionId, query });
+}
+
+export async function nacosGetConfigHistory(connectionId: string, key: NacosConfigHistoryKey): Promise<NacosConfigItem> {
+  return post("/api/nacos/configs/history/get", { connectionId, key });
+}
+
+export async function nacosRollbackConfig(connectionId: string, req: NacosConfigRollbackRequest): Promise<void> {
+  return post("/api/nacos/configs/history/rollback", { connectionId, req });
+}
+
+export async function nacosListServices(connectionId: string, query: NacosServiceQuery): Promise<NacosServiceList> {
+  return post("/api/nacos/services/list", { connectionId, query });
+}
+
+export async function nacosListInstances(connectionId: string, query: NacosInstanceQuery): Promise<NacosInstanceInfo[]> {
+  return post("/api/nacos/instances/list", { connectionId, query });
+}
+
+export async function nacosUpdateInstance(connectionId: string, req: NacosInstanceUpdate): Promise<void> {
+  return post("/api/nacos/instances/update", { connectionId, req });
+}
+
+export async function nacosRawRequest(connectionId: string, req: NacosRawRequest): Promise<NacosRawResponse> {
+  return post("/api/nacos/raw", { connectionId, req });
+}
+
+// ---------------------------------------------------------------------------
 // MongoDB
 // ---------------------------------------------------------------------------
 
@@ -1474,6 +1686,18 @@ export async function mongoListDatabases(connectionId: string): Promise<string[]
 
 export async function mongoListCollections(connectionId: string, database: string): Promise<string[]> {
   return post("/api/mongo/list-collections", { connectionId, database });
+}
+
+export async function mongoCreateDatabase(connectionId: string, database: string): Promise<void> {
+  await post("/api/mongo/create-database", { connectionId, database });
+}
+
+export async function mongoDropDatabase(connectionId: string, database: string): Promise<void> {
+  await post("/api/mongo/drop-database", { connectionId, database });
+}
+
+export async function mongoDropCollection(connectionId: string, database: string, collection: string): Promise<void> {
+  await post("/api/mongo/drop-collection", { connectionId, database, collection });
 }
 
 export async function elasticsearchListIndices(connectionId: string): Promise<string[]> {

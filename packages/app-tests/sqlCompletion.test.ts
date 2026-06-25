@@ -788,7 +788,8 @@ test("suggests SQL snippets for common abbreviations", () => {
 
   const snippet = items.find((item) => item.type === "snippet" && item.label === "select *");
   assert.ok(snippet);
-  assert.equal(snippet.apply, "SELECT *\nFROM table\nLIMIT 100;");
+  assert.equal(snippet.detail, "SELECT *\nFROM table\nLIMIT 100;");
+  assert.equal(snippet.apply, "SELECT *\nFROM ${table}\nLIMIT 100;");
 });
 
 test("applies keyword case to built-in SQL snippets", () => {
@@ -800,7 +801,8 @@ test("applies keyword case to built-in SQL snippets", () => {
 
   const snippet = items.find((item) => item.type === "snippet" && item.label === "select *");
   assert.ok(snippet);
-  assert.equal(snippet.apply, "select *\nfrom table\nlimit 100;");
+  assert.equal(snippet.detail, "select *\nfrom table\nlimit 100;");
+  assert.equal(snippet.apply, "select *\nfrom ${table}\nlimit 100;");
 });
 
 test("suggests DATE_FORMAT as parameter snippet", () => {
@@ -1298,6 +1300,19 @@ test("table alias suggestions avoid reserved words", () => {
   assert.ok(aliasItem);
   assert.notEqual(aliasItem!.apply, "AS or ");
   assert.equal(aliasItem!.apply, "AS ord ");
+});
+
+test("automatic table aliases avoid reserved words", () => {
+  const items = buildSqlCompletionItems("select * from ord", "select * from ord".length, {
+    tables,
+    columnsByTable,
+    autoAliasTables: true,
+  });
+
+  const tableItem = items.find((item) => item.type === "table" && item.label === "orders");
+  assert.ok(tableItem);
+  assert.notEqual(tableItem!.apply, "orders AS or");
+  assert.equal(tableItem!.apply, "orders AS ord");
 });
 
 test("table alias suggestions avoid existing aliases", () => {
@@ -1839,6 +1854,28 @@ test("prefix matches still rank above fuzzy matches", () => {
   });
   // Prefix match "name" should be first
   assert.equal(items[0]?.label, "name");
+});
+
+test("suggests columns after multiple select-list expressions", () => {
+  const sql = "select project_name, review_accountant, doc from ypmng_archive LIMIT 100";
+  const cursor = "select project_name, review_accountant, doc".length;
+  const items = buildSqlCompletionItems(sql, cursor, {
+    tables: [{ name: "ypmng_archive", type: "table" }],
+    objects: [{ name: "proc_get_ypfmm_pd_score_list_with_template_doc_id", schema: "y_jnpf", type: "procedure" }],
+    columnsByTable: new Map([
+      [
+        "ypmng_archive",
+        [
+          { name: "doc_id", table: "ypmng_archive", dataType: "bigint" },
+          { name: "project_name", table: "ypmng_archive", dataType: "varchar" },
+          { name: "review_accountant", table: "ypmng_archive", dataType: "varchar" },
+        ],
+      ],
+    ]),
+  });
+
+  assert.ok(items.some((item) => item.label === "doc_id" && item.type === "column"));
+  assert.ok(!items.some((item) => item.type === "function" && item.label.startsWith("proc_")));
 });
 
 // --- Type-aware comparison hints ---

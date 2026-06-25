@@ -15,10 +15,11 @@ import SchemaDiffDeployStep from "@/components/diff/SchemaDiffDeployStep.vue";
 import SchemaDiffOptionsPanel from "@/components/diff/SchemaDiffOptionsPanel.vue";
 
 import { getSchemaDiffOptionsForDbType } from "@/lib/schemaDiffOptions";
-import { getDefaultOptionsForDbType } from "@/types/schemaDiff";
+import { normalizeSchemaDiffCompareOptions } from "@/types/schemaDiff";
 import type { SchemaDiffCompareOptions, SchemaDiffConfig } from "@/types/schemaDiff";
 import type { ObjectSourceKind } from "@/types/database";
-import { convertToSchemaDiffObjects, groupDiffObjects, type OperationGroup, type SchemaDiffObject, type DiffOperationType, type DiffObjectKind, type SchemaDiffPreparation } from "@/lib/schemaDiff";
+import { buildDeploySqlForObjects, convertToSchemaDiffObjects, groupDiffObjects, type OperationGroup, type SchemaDiffObject, type DiffOperationType, type DiffObjectKind, type SchemaDiffPreparation } from "@/lib/schemaDiff";
+import { compileSchemaDiffTableFilter, filterSchemaDiffTables } from "@/lib/schemaDiffTableFilter";
 import { Splitpanes, Pane } from "splitpanes";
 import "splitpanes/dist/splitpanes.css";
 
@@ -180,6 +181,7 @@ onBeforeUnmount(() => {
 
 // Config management
 const { configs, activeConfigId, activeConfig, recentConfigs, ensureDefaultConfig, updateActiveConfigConnection, updateActiveConfigOptions, saveToHistory, deleteFromHistory } = useSchemaDiffConfig();
+const schemaDiffPanelOptions = computed(() => normalizeSchemaDiffCompareOptions(activeConfig.value?.options, getDbType()));
 
 const selectedObject = computed(() => {
   if (!selectedObjectId.value) return null;
@@ -259,7 +261,7 @@ function handleSwap() {
 
 function handleOptionsUpdate(options: SchemaDiffCompareOptions) {
   if (activeConfig.value) {
-    updateActiveConfigOptions(options);
+    updateActiveConfigOptions(normalizeSchemaDiffCompareOptions(options, getDbType()));
   }
 }
 
@@ -267,10 +269,10 @@ function handleOptionsUpdate(options: SchemaDiffCompareOptions) {
  *  Views and materialized views need the object_type parameter so the
  *  backend can call DBMS_METADATA.GET_DDL with the correct type. */
 function isViewOrMaterializedView(tableType: string): ObjectSourceKind | undefined {
-  switch (tableType.toUpperCase()) {
+  switch (tableType.toUpperCase().replace(/\s+/g, "_")) {
     case "VIEW":
       return "VIEW";
-    case "MATERIALIZED VIEW":
+    case "MATERIALIZED_VIEW":
       return "MATERIALIZED_VIEW";
     default:
       return undefined;
@@ -282,14 +284,20 @@ async function handleCompare() {
   step.value = "compare";
 
   try {
+    const targetConfig = store.getConfig(targetConnectionId.value);
+    const dbType = targetConfig?.db_type || "mysql";
+    const opts = normalizeSchemaDiffCompareOptions(activeConfig.value?.options, dbType);
+    const tableFilter = compileSchemaDiffTableFilter(opts);
+
     await store.ensureConnected(sourceConnectionId.value);
     await store.ensureConnected(targetConnectionId.value);
 
     const [srcTables, tgtTables] = await Promise.all([api.listTables(sourceConnectionId.value, sourceDatabase.value, sourceSchema.value), api.listTables(targetConnectionId.value, targetDatabase.value, targetSchema.value)]);
+    const { sourceTables, targetTables } = filterSchemaDiffTables(srcTables, tgtTables, tableFilter);
 
     // Load schema details in parallel
     const sourceDetails = await Promise.all(
-      srcTables.map(async (table) => {
+      sourceTables.map(async (table) => {
         const objectType = isViewOrMaterializedView(table.table_type);
         const [columns, indexes, foreignKeys, triggers, ddl] = await Promise.all([
           api.getColumns(sourceConnectionId.value, sourceDatabase.value, sourceSchema.value, table.name),
@@ -303,7 +311,7 @@ async function handleCompare() {
     );
 
     const targetDetails = await Promise.all(
-      tgtTables.map(async (table) => {
+      targetTables.map(async (table) => {
         const objectType = isViewOrMaterializedView(table.table_type);
         const [columns, indexes, foreignKeys, triggers, ddl] = await Promise.all([
           api.getColumns(targetConnectionId.value, targetDatabase.value, targetSchema.value, table.name),
@@ -316,10 +324,7 @@ async function handleCompare() {
       }),
     );
 
-    const targetConfig = store.getConfig(targetConnectionId.value);
-    const dbType = targetConfig?.db_type || "mysql";
     const isPostgresLike = dbType === "postgres" || dbType === "opengauss";
-    const opts = activeConfig.value?.options;
 
     // Fetch new object types for PostgreSQL-like databases
     const promises: Promise<any>[] = [];
@@ -352,8 +357,8 @@ async function handleCompare() {
     const tgtOwners = opts?.owners && isPostgresLike ? results[idx++] : [];
 
     const result = await api.prepareSchemaDiff({
-      sourceTables: srcTables,
-      targetTables: tgtTables,
+      sourceTables,
+      targetTables,
       sourceDetails,
       targetDetails,
       sourceFunctions: srcFunctions,
@@ -368,6 +373,7 @@ async function handleCompare() {
       targetSchema: targetSchema.value,
       ignoreComments: ignoreComments.value,
       cascadeDelete: opts?.cascadeDelete ?? false,
+      compareColumnOrder: opts.compareColumnOrder,
     });
 
     // Convert to unified objects
@@ -459,54 +465,7 @@ function handleToggleObjectSelection(objectId: string, selected: boolean) {
 }
 
 function regenerateDeploySql() {
-  // Only select top-level objects (exclude children)
-  const selected = diffObjects.value.filter((o) => {
-    const isTopLevel = !o.id.startsWith("col-") && !o.id.startsWith("idx-") && !o.id.startsWith("fk-") && !o.id.startsWith("trg-");
-    return o.selected && o.operationType !== "none" && isTopLevel;
-  });
-
-  if (selected.length === 0) {
-    deploySql.value = "-- No objects selected";
-    return;
-  }
-
-  const lines: string[] = [];
-
-  for (const obj of selected) {
-    if (obj.operationType === "create") {
-      if (obj.sourceDdl) {
-        lines.push(`-- Create ${obj.objectKind}: ${obj.name}`);
-        lines.push(obj.sourceDdl);
-        lines.push("");
-      }
-    } else if (obj.operationType === "delete") {
-      lines.push(`-- Drop ${obj.objectKind}: ${obj.name}`);
-      const dropSql = generateDropSql(obj);
-      lines.push(dropSql);
-      lines.push("");
-    } else if (obj.operationType === "modify") {
-      if (obj.sourceDdl) {
-        lines.push(`-- Modify ${obj.objectKind}: ${obj.name}`);
-        lines.push(obj.sourceDdl);
-        lines.push("");
-      }
-    }
-  }
-
-  deploySql.value = lines.join("\n") || "-- No DDL available for selected objects";
-}
-
-function generateDropSql(obj: SchemaDiffObject): string {
-  const typeMap: Record<string, string> = {
-    table: "TABLE",
-    view: "VIEW",
-    function: "FUNCTION",
-    sequence: "SEQUENCE",
-    rule: "RULE",
-    owner: "OWNED BY",
-  };
-  const sqlType = typeMap[obj.objectKind] || obj.objectKind.toUpperCase();
-  return `DROP ${sqlType} IF EXISTS ${obj.name};`;
+  deploySql.value = buildDeploySqlForObjects(diffObjects.value);
 }
 
 async function handleExecuteScript() {
@@ -869,12 +828,12 @@ const targetConnectionInfo = computed(() => {
 
       <!-- Options Panel Overlay -->
       <div v-if="showOptionsPanel" class="absolute inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center" @click.self="showOptionsPanel = false">
-        <div class="bg-card border rounded-lg shadow-lg w-[500px] max-h-[80vh] overflow-auto p-4">
+        <div class="bg-card border rounded-lg shadow-lg w-[760px] max-w-[calc(100vw-2rem)] max-h-[80vh] overflow-auto p-4">
           <div class="flex items-center justify-between mb-4">
             <h3 class="text-sm font-medium">{{ t("schemaDiff.optionsTitle") }}</h3>
             <Button variant="ghost" size="sm" @click="showOptionsPanel = false">✕</Button>
           </div>
-          <SchemaDiffOptionsPanel :options="activeConfig?.options ?? getDefaultOptionsForDbType(getDbType())" :option-tree="optionTree" @update:options="handleOptionsUpdate" @close="showOptionsPanel = false" />
+          <SchemaDiffOptionsPanel :options="schemaDiffPanelOptions" :option-tree="optionTree" @update:options="handleOptionsUpdate" @close="showOptionsPanel = false" />
         </div>
       </div>
     </DialogContent>

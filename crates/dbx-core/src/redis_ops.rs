@@ -34,14 +34,14 @@ pub async fn redis_scan_keys_core(
     pattern: &str,
     count: usize,
 ) -> Result<RedisScanResult, String> {
-    redis_scan_keys_batch_core(state, connection_id, db, cursor, pattern, count, 1).await
+    redis_scan_keys_batch_core(state, connection_id, db, cursor, pattern, count, 1, true).await
 }
 
 /// Batch-scan keys with server-side multi-SCAN support.
 ///
-/// Performs up to `max_iterations` SCAN→TYPE cycles server-side in a single
-/// API call, dramatically reducing frontend↔backend roundtrips when fetching
-/// many keys (e.g. "fetch all" in the key browser).
+/// Performs up to `max_iterations` SCAN cycles server-side in a single API
+/// call, dramatically reducing frontend↔backend roundtrips when fetching many
+/// keys (e.g. "fetch all" in the key browser). TYPE metadata is optional.
 pub async fn redis_scan_keys_batch_core(
     state: &AppState,
     connection_id: &str,
@@ -50,6 +50,7 @@ pub async fn redis_scan_keys_batch_core(
     pattern: &str,
     count: usize,
     max_iterations: usize,
+    include_types: bool,
 ) -> Result<RedisScanResult, String> {
     ensure_redis_pool(state, connection_id).await?;
     let connections = state.connections.read().await;
@@ -59,20 +60,34 @@ pub async fn redis_scan_keys_batch_core(
             RedisConnection::Direct(con) => {
                 let mut con = con.lock().await;
                 redis_driver::select_db(&mut *con, db).await?;
-                redis_driver::scan_keys_batch(&mut *con, cursor, pattern, count, max_iterations).await
+                redis_driver::scan_keys_batch(&mut *con, cursor, pattern, count, max_iterations, include_types).await
             }
             RedisConnection::Cluster(cluster) => {
                 redis_driver::ensure_cluster_db(db)?;
                 // Cluster scan already iterates across nodes; for batch mode we
                 // loop the cluster-level scan to accumulate keys server-side.
                 if max_iterations <= 1 {
-                    return redis_driver::scan_cluster_keys_page(cluster, cursor, pattern, count).await;
+                    return redis_driver::scan_cluster_keys_page_with_options(
+                        cluster,
+                        cursor,
+                        pattern,
+                        count,
+                        include_types,
+                    )
+                    .await;
                 }
                 let mut all_keys: Vec<RedisKeyInfo> = Vec::new();
                 let mut current_cursor = cursor;
                 let mut total_keys: u64 = 0;
                 for i in 0..max_iterations {
-                    let page = redis_driver::scan_cluster_keys_page(cluster, current_cursor, pattern, count).await?;
+                    let page = redis_driver::scan_cluster_keys_page_with_options(
+                        cluster,
+                        current_cursor,
+                        pattern,
+                        count,
+                        include_types,
+                    )
+                    .await?;
                     if i == 0 {
                         total_keys = page.total_keys;
                     }
@@ -835,4 +850,50 @@ pub async fn redis_create_pubsub_core(state: &AppState, connection_id: &str) -> 
     let (host, port) = state.connection_host_port(connection_id, &config).await?;
     let timeout = std::time::Duration::from_secs(config.effective_connect_timeout_secs());
     redis_driver::connect_pubsub(&config, &host, port, timeout).await
+}
+
+pub async fn redis_slowlog_get_core(
+    state: &AppState,
+    connection_id: &str,
+    count: usize,
+    node_host: Option<String>,
+    node_port: Option<u16>,
+) -> Result<Vec<redis_driver::RedisSlowlogEntry>, String> {
+    ensure_redis_pool(state, connection_id).await?;
+    let connections = state.connections.read().await;
+    match connections.get(connection_id).ok_or("Not found")? {
+        PoolKind::Redis(redis) => match redis {
+            RedisConnection::Direct(con) => {
+                let mut con = con.lock().await;
+                // SLOWLOG is a server-level command, no select_db needed
+                redis_driver::get_slowlog(&mut *con, count).await
+            }
+            RedisConnection::Cluster(cluster) => {
+                if let (Some(host), Some(port)) = (node_host.as_ref(), node_port) {
+                    let endpoint = redis_driver::RedisNodeEndpoint { host: host.clone(), port };
+                    let mut con = redis_driver::connect_cluster_node(cluster, &endpoint).await?;
+                    redis_driver::get_slowlog(&mut con, count).await
+                } else {
+                    // No node specified — return empty (frontend enforces selection)
+                    Ok(Vec::new())
+                }
+            }
+        },
+        _ => Err("Not a Redis connection".to_string()),
+    }
+}
+
+pub async fn redis_cluster_master_nodes_core(
+    state: &AppState,
+    connection_id: &str,
+) -> Result<Vec<redis_driver::RedisNodeEndpoint>, String> {
+    ensure_redis_pool(state, connection_id).await?;
+    let connections = state.connections.read().await;
+    match connections.get(connection_id).ok_or("Not found")? {
+        PoolKind::Redis(redis) => match redis {
+            RedisConnection::Cluster(cluster) => redis_driver::cluster_master_nodes(cluster).await,
+            _ => Ok(Vec::new()),
+        },
+        _ => Err("Not a Redis connection".to_string()),
+    }
 }

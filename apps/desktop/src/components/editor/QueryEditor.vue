@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, shallowRef, computed, nextTick } from "vue";
-import { Play, Copy, Table2, TextSelect } from "@lucide/vue";
+import { FileCode, Play, Copy, Table2, TextSelect } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import type { CompletionContext } from "@codemirror/autocomplete";
 import type { EditorView as EditorViewType } from "@codemirror/view";
 import { search as cmSearch } from "@codemirror/search";
 import EditorSearchPanel from "./EditorSearchPanel.vue";
+import SqlExecutionTargetPicker from "./SqlExecutionTargetPicker.vue";
 import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
 import { copyToClipboard } from "@/lib/clipboard";
-import { resolveExecutableSql, type SqlExecutionSnapshot } from "@/lib/sqlExecutionTarget";
+import { resolveExecutableSql, type SqlExecutionSnapshot, type SqlExecutionOverride, type SqlExecutionCandidate } from "@/lib/sqlExecutionTarget";
+import { buildExecutionCandidates, hasMultipleExecutionTargets, supportsExecutionTargetPicker } from "@/lib/sqlStatementRanges";
 import { formatSqlText, type SqlFormatDialect } from "@/lib/sqlFormatter";
 import { formatMongoShellText } from "@/lib/mongoFormatter";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -36,13 +38,15 @@ import { clampEditorFontSize, createEditorZoomCommitScheduler, fontSizeFromGestu
 import { normalizeShortcutSettings, shortcutToCodeMirrorKey } from "@/lib/shortcutRegistry";
 import { trimmedSelectionLayer } from "@/lib/codemirrorTrimmedSelectionLayer";
 import { selectionMatchOccurrences } from "@/lib/codemirrorSelectionMatches";
+import { createDbxCodeMirrorSqlDialect } from "@/lib/codemirrorSqlDialect";
 import { isSchemaAware, isSingleDatabase } from "@/lib/databaseFeatureSupport";
+import { usesLocalOnlyEditorCompletionMetadata, usesOnDemandOnlyEditorColumnMetadata } from "@/lib/completionMetadataPolicy";
 import { qualifiedTableNameAtSqlPosition } from "@/lib/queryCursorTableTarget";
 import * as api from "@/lib/api";
 import { areSqlSemanticDiagnosticsEqual, buildSqlParserErrorDiagnostic, buildSqlSemanticDiagnostics, shouldRunSqlSemanticDiagnostics, type SqlSemanticDiagnostic } from "@/lib/sqlSemanticDiagnostics";
 import { buildRedisSyntaxDiagnostics, shouldRunRedisDiagnostics } from "@/lib/redisSyntaxDiagnostics";
 import { buildRedisCompletionItemsFromContext, getRedisCompletionContext, getRedisCompletionResultValidFor, shouldAutoOpenRedisCompletion, takesKeyArgument, type RedisCompletionItem } from "@/lib/redisCompletion";
-import type { SqlCompletionColumn, SqlCompletionForeignKey, SqlCompletionItem, SqlCompletionObject } from "@/lib/sqlCompletion";
+import type { SqlCompletionColumn, SqlCompletionForeignKey, SqlCompletionItem, SqlCompletionObject, SqlCompletionTable } from "@/lib/sqlCompletion";
 import type { DatabaseType, SqlReferenceAnalysis, SqlTableReference, SqlTextSpan } from "@/types/database";
 
 const props = defineProps<{
@@ -61,15 +65,18 @@ const props = defineProps<{
   initialSelection?: { anchor: number; head: number };
 }>();
 
+const COMPLETION_REMOTE_LATENCY_BUDGET_MS = 120;
+
 const emit = defineEmits<{
   "update:modelValue": [value: string];
   selectionChange: [value: string];
   cursorChange: [pos: number];
   formatError: [message: string];
-  execute: [snapshot: SqlExecutionSnapshot];
+  execute: [source: SqlExecutionOverride];
   save: [];
   clickTable: [tableName: string];
   viewTableData: [tableName: string];
+  viewTableDdl: [tableName: string];
   clickColumn: [columns: Array<{ name: string; table: string; schema?: string }>, error?: string | undefined];
   closeColumnPanel: [];
   viewportChange: [viewport: { scrollTop: number; scrollLeft: number }];
@@ -150,6 +157,13 @@ const contextTableName = ref<string | null>(null);
 const hasSelectedSql = computed(() => selectedSql.value.trim().length > 0);
 const canCopySelectedSql = computed(() => selectedSql.value.length > 0);
 const canExecuteContextSql = computed(() => executableSql.value.trim().length > 0);
+
+// Execution target picker state
+const pickerVisible = ref(false);
+const pickerCandidates = ref<SqlExecutionCandidate[]>([]);
+const pickerActiveIndex = ref(0);
+const pickerAnchor = ref<{ left: number; top: number }>();
+
 const executeContextMenuLabel = computed(() => t(hasSelectedSql.value ? "editor.contextMenu.executeSelection" : "editor.contextMenu.executeCurrent"));
 
 interface EditorGestureEvent extends Event {
@@ -184,6 +198,11 @@ let codeMirrorRedo: typeof import("@codemirror/commands").redo | null = null;
 let codeMirrorSelectAll: typeof import("@codemirror/commands").selectAll | null = null;
 let codeMirrorInsertNewlineKeepIndent: typeof import("@codemirror/commands").insertNewlineKeepIndent | null = null;
 let setSqlDiagnosticsEffect: import("@codemirror/state").StateEffectType<SqlSemanticDiagnostic[]> | null = null;
+let setPreviewRangeEffect: import("@codemirror/state").StateEffectType<{ from: number; to: number } | null> | null = null;
+let previewRangeComp: import("@codemirror/state").Compartment | null = null;
+let buildPreviewRangeExtension: (() => import("@codemirror/state").Extension) | null = null;
+let indentComp: import("@codemirror/state").Compartment | null = null;
+let codeMirrorIndentUnit: typeof import("@codemirror/language").indentUnit | null = null;
 let semanticDiagnostics: SqlSemanticDiagnostic[] = [];
 let semanticDiagnosticTimer: ReturnType<typeof setTimeout> | null = null;
 let semanticDiagnosticRunId = 0;
@@ -207,6 +226,20 @@ const cachedForeignKeysByTable = new Map<string, SqlCompletionForeignKey[]>();
 const zoomCommitScheduler = createEditorZoomCommitScheduler((fontSize) => {
   if (settingsStore.editorSettings.fontSize === fontSize) return;
   settingsStore.updateEditorSettings({ fontSize });
+});
+
+const queryEditorAppearanceSettings = computed(() => {
+  const settings = settingsStore.editorSettings;
+  return {
+    fontFamily: settings.fontFamily,
+    fontSize: settings.fontSize,
+    theme: settings.theme,
+    customThemeColors: settings.customThemeColors,
+    customThemes: settings.customThemes,
+    activeCustomThemeId: settings.activeCustomThemeId,
+    wordWrap: settings.wordWrap,
+    shortcuts: settings.shortcuts,
+  };
 });
 
 function syncEditorFontCssVars(fontSize = liveFontSize.value, fontFamily = settingsStore.editorSettings.fontFamily) {
@@ -277,6 +310,13 @@ function onEditorGestureEnd(event: Event) {
   zoomCommitScheduler.flush(liveFontSize.value);
 }
 
+// Resolve the indent unit (one Tab worth) from the SQL formatter settings so
+// the Tab key, multi-line indent and auto-indent all honor the configured width.
+function editorIndentUnit(): string {
+  const { useTabs, tabWidth } = settingsStore.editorSettings.sqlFormatter;
+  return useTabs ? "\t" : " ".repeat(tabWidth);
+}
+
 function handleTab(view: EditorViewType): boolean {
   if (codeMirrorCompletionStatus?.(view.state) === "active") return false;
   const { state, dispatch } = view;
@@ -285,13 +325,97 @@ function handleTab(view: EditorViewType): boolean {
   const line = state.doc.lineAt(sel.from);
   const before = line.text.slice(0, sel.from - line.from);
   if (/^\s*$/.test(before)) return codeMirrorIndentMore?.(view) ?? false;
-  dispatch(state.update(state.replaceSelection("  "), { userEvent: "input.type" }));
+  dispatch(state.update(state.replaceSelection(editorIndentUnit()), { userEvent: "input.type" }));
   return true;
 }
 
-function executeCurrentSql() {
-  if (view.value) emit("execute", sqlExecutionSnapshotFromView(view.value));
+function requestExecute() {
+  const currentView = view.value;
+  if (!currentView) return false;
+  const selection = currentView.state.selection.main;
+  if (!selection.empty) {
+    // Has manual selection → execute directly, skip picker.
+    emit("execute", sqlExecutionSnapshotFromView(currentView));
+    return true;
+  }
+  if (!supportsExecutionTargetPicker(props.databaseType)) {
+    emit("execute", sqlExecutionSnapshotFromView(currentView));
+    return true;
+  }
+  // No selection → show the execution target picker.
+  const doc = currentView.state.doc.toString();
+  const cursorPos = selection.head;
+  const candidates = buildExecutionCandidates(doc, cursorPos, props.databaseType);
+  if (candidates.length === 0) return false;
+  if (!settingsStore.editorSettings.showExecutionTargetPicker || !hasMultipleExecutionTargets(doc, props.databaseType)) {
+    const preferredKind = settingsStore.editorSettings.executeMode === "current" ? "cursor" : "all";
+    const candidate = candidates.find((item) => item.kind === preferredKind) ?? candidates[0];
+    emit("execute", candidate.sql);
+    return true;
+  }
+  closePicker();
+  pickerCandidates.value = candidates;
+  pickerActiveIndex.value = 0;
+  pickerAnchor.value = executionPickerAnchor(currentView, cursorPos, candidates.length);
+  pickerVisible.value = true;
+  setPreviewRange({ from: candidates[0].from, to: candidates[0].to });
   return true;
+}
+
+function handleSqlSingleQuote(view: EditorViewType): boolean {
+  const { state } = view;
+  if (state.readOnly) return false;
+  if (state.selection.ranges.some((range) => !range.empty || range.from === 0 || state.doc.sliceString(range.from - 1, range.from) !== "'")) return false;
+  const transaction = state.changeByRange((range) => ({
+    changes: { from: range.from, insert: "'" },
+    range,
+  }));
+  view.dispatch(transaction, { userEvent: "input.type" });
+  return true;
+}
+
+function executionPickerAnchor(currentView: EditorViewType, cursorPos: number, candidateCount: number): { left: number; top: number } | undefined {
+  const cursorRect = currentView.coordsAtPos(cursorPos);
+  const rootRect = editorRef.value?.getBoundingClientRect();
+  if (!cursorRect || !rootRect) return undefined;
+
+  const verticalGap = 8;
+  const pickerHeight = 40 + Math.max(1, candidateCount) * 36;
+  const verticalMargin = 12;
+  const left = rootRect.width / 2;
+  const cursorBottom = cursorRect.bottom - rootRect.top;
+  const maxTop = Math.max(verticalMargin, rootRect.height - pickerHeight - verticalMargin);
+  const top = Math.min(cursorBottom + verticalGap, maxTop);
+
+  return { left, top };
+}
+
+function setPreviewRange(range: { from: number; to: number } | null) {
+  if (!view.value || !setPreviewRangeEffect) return;
+  view.value.dispatch({
+    effects: setPreviewRangeEffect.of(range),
+  });
+}
+
+function onPickerActiveIndexChange(index: number) {
+  pickerActiveIndex.value = index;
+  const candidate = pickerCandidates.value[index];
+  if (candidate) {
+    setPreviewRange({ from: candidate.from, to: candidate.to });
+  }
+}
+
+function onPickerConfirm(candidate: SqlExecutionCandidate) {
+  closePicker();
+  emit("execute", candidate.sql);
+}
+
+function closePicker() {
+  pickerVisible.value = false;
+  pickerAnchor.value = undefined;
+  setPreviewRange(null);
+  // Restore focus to the CodeMirror editor.
+  view.value?.focus();
 }
 
 function syncContextMenuState(currentView: EditorViewType) {
@@ -338,7 +462,7 @@ function clearTableNavigationHoverOnModifierRelease(event: KeyboardEvent) {
 
 function executeFromContextMenu() {
   if (!canExecuteContextSql.value) return;
-  executeCurrentSql();
+  requestExecute();
   focusEditor();
 }
 
@@ -369,6 +493,12 @@ function openTableFromContextMenu() {
   focusEditor();
 }
 
+function openTableDdlFromContextMenu() {
+  if (!contextTableName.value) return;
+  emit("viewTableDdl", contextTableName.value);
+  focusEditor();
+}
+
 function selectSqlLineFromGutter(currentView: EditorViewType, line: { from: number; to: number }, event: Event): boolean {
   if (!(event instanceof MouseEvent) || event.button !== 0) return false;
   event.preventDefault();
@@ -394,6 +524,12 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => [
     disabled: !contextTableName.value,
     icon: Table2,
   },
+  {
+    label: t("contextMenu.viewDdl"),
+    action: openTableDdlFromContextMenu,
+    disabled: !contextTableName.value,
+    icon: FileCode,
+  },
   { label: "", separator: true },
   {
     label: t("editor.contextMenu.copySelection"),
@@ -418,7 +554,7 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         },
         ...binding(shortcuts.find, openSearch),
         ...binding(shortcuts.replace, openReplace),
-        ...binding(shortcuts.executeSql, executeCurrentSql),
+        ...binding(shortcuts.executeSql, requestExecute),
         ...binding(shortcuts.saveSql, () => {
           emit("save");
           return true;
@@ -452,6 +588,11 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
 function wordWrapExtension() {
   if (!editorViewModule) return [];
   return props.forceWordWrap || settingsStore.editorSettings.wordWrap ? editorViewModule.EditorView.lineWrapping : [];
+}
+
+function indentExtension() {
+  if (!codeMirrorIndentUnit) return [];
+  return codeMirrorIndentUnit.of(editorIndentUnit());
 }
 
 function selectedSqlFromView(currentView: EditorViewType): string {
@@ -492,6 +633,14 @@ function completionCacheKey(table: { name: string; schema?: string | null }) {
 
 function supportsDatabaseQualifierCompletion(): boolean {
   return !!props.databaseType && !isSchemaAware(props.databaseType) && !isSingleDatabase(props.databaseType);
+}
+
+function usesLocalOnlyCompletionMetadata(): boolean {
+  return usesLocalOnlyEditorCompletionMetadata(props.databaseType);
+}
+
+function usesOnDemandOnlyCompletionColumns(): boolean {
+  return usesOnDemandOnlyEditorColumnMetadata(props.databaseType);
 }
 
 function completionMetadataTarget(table: { name: string; schema?: string | null }): { database: string; schema?: string } | null {
@@ -626,11 +775,13 @@ async function resolveSqlHoverTooltip(currentView: EditorViewType, pos: number) 
 
   try {
     if (cachedTables.length === 0) {
-      cachedTables = await connectionStore.listCompletionTables(props.connectionId, props.database, name, MAX_COMPLETION_TABLES, props.schema);
+      cachedTables = usesLocalOnlyCompletionMetadata()
+        ? connectionStore.lookupLocalCompletionTables(props.connectionId, props.database, name, MAX_COMPLETION_TABLES, props.schema)
+        : await connectionStore.listCompletionTables(props.connectionId, props.database, name, MAX_COMPLETION_TABLES, props.schema);
     }
 
     let table = matchTable(identifier, cachedTables) ?? matchTable(name, cachedTables);
-    if (!table) {
+    if (!table && !usesLocalOnlyCompletionMetadata()) {
       const hoverTables = await connectionStore.listCompletionTables(props.connectionId, props.database, name, MAX_COMPLETION_TABLES, props.schema);
       cachedTables = [...cachedTables, ...hoverTables];
       table = matchTable(identifier, hoverTables) ?? matchTable(name, hoverTables);
@@ -739,6 +890,12 @@ async function enrichSemanticDiagnosticTables(tables: SqlTableReference[]) {
       continue;
     }
     try {
+      if (usesLocalOnlyCompletionMetadata()) {
+        const matches = connectionStore.lookupLocalCompletionTables(props.connectionId, props.database, table.name, MAX_COMPLETION_TABLES, props.schema);
+        const match = matches.find((item) => item.name.toLowerCase() === table.name.toLowerCase());
+        enriched.push(match?.schema ? { ...table, schema: match.schema } : table);
+        continue;
+      }
       const matches = await connectionStore.listCompletionTables(props.connectionId, props.database, table.name, MAX_COMPLETION_TABLES, props.schema);
       cachedTables = [...cachedTables, ...matches];
       const match = matches.find((item) => item.name.toLowerCase() === table.name.toLowerCase());
@@ -790,7 +947,9 @@ async function refreshSemanticDiagnostics() {
     if (runId !== semanticDiagnosticRunId) return;
 
     const tables = await enrichSemanticDiagnosticTables(analysis.tables);
-    await Promise.all(tables.map((table) => ensureColumnsForTable(table)));
+    if (!usesOnDemandOnlyCompletionColumns()) {
+      await Promise.all(tables.map((table) => ensureColumnsForTable(table)));
+    }
     if (runId !== semanticDiagnosticRunId) return;
 
     const enrichedAnalysis: SqlReferenceAnalysis = { ...analysis, tables };
@@ -1105,6 +1264,7 @@ async function provideSqlCompletions(currentState: import("@codemirror/state").E
         dialect: props.dialect,
         databaseType: props.databaseType,
         keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
+        autoAliasTables: settingsStore.editorSettings.autoAliasTables,
       });
       return buildCompletionResult(items, position - completionContext.prefix.length, getSqlCompletionResultValidFor(fullDoc, position));
     }
@@ -1123,6 +1283,7 @@ async function provideSqlCompletions(currentState: import("@codemirror/state").E
         dialect: props.dialect,
         databaseType: props.databaseType,
         keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
+        autoAliasTables: settingsStore.editorSettings.autoAliasTables,
       });
       return buildCompletionResult(items, position - completionContext.prefix.length, getSqlCompletionResultValidFor(fullDoc, position));
     }
@@ -1267,6 +1428,7 @@ function buildLocalSqlCompletionResult(completionContext: ReturnType<typeof getS
     dialect: props.dialect,
     databaseType: props.databaseType,
     keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
+    autoAliasTables: settingsStore.editorSettings.autoAliasTables,
   });
 
   return buildCompletionResult(items, position - completionContext.prefix.length, getSqlCompletionResultValidFor(fullDoc, position));
@@ -1274,10 +1436,12 @@ function buildLocalSqlCompletionResult(completionContext: ReturnType<typeof getS
 
 function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof getSqlCompletionContext>) {
   if (!props.connectionId || props.database == null) return;
+  const localOnlyMetadata = usesLocalOnlyCompletionMetadata();
+  const onDemandOnlyColumns = usesOnDemandOnlyCompletionColumns();
   const connectionId = props.connectionId;
   const database = props.database;
   const schema = completionContext.qualifier && completionContext.suggestTables ? completionContext.qualifier : props.schema;
-  if (completionContext.suggestTables || (!!completionContext.qualifier && !isReferencedTableQualifier(completionContext))) {
+  if (!localOnlyMetadata && (completionContext.suggestTables || (!!completionContext.qualifier && !isReferencedTableQualifier(completionContext)))) {
     void connectionStore
       .refreshCompletionTables(connectionId, database, completionContext.qualifier && !schema ? completionContext.qualifier : completionContext.prefix, MAX_COMPLETION_TABLES, schema)
       .then((tables) => {
@@ -1288,7 +1452,7 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
       })
       .catch(() => {});
   }
-  if (completionContext.suggestRoutines || completionContext.exclusiveRoutineSuggestions || (!!completionContext.qualifier && !completionContext.exclusiveColumnSuggestions)) {
+  if (!localOnlyMetadata && (completionContext.suggestRoutines || completionContext.exclusiveRoutineSuggestions || (!!completionContext.qualifier && !completionContext.exclusiveColumnSuggestions))) {
     void connectionStore
       .refreshCompletionObjects(connectionId, database, completionContext.prefix, MAX_COMPLETION_TABLES, props.schema)
       .then((objects) => {
@@ -1296,13 +1460,13 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
       })
       .catch(() => {});
   }
-  if (completionContext.suggestTables && !completionContext.qualifier && !completionContext.insertTable) {
+  if (!localOnlyMetadata && completionContext.suggestTables && !completionContext.qualifier && !completionContext.insertTable) {
     void connectionStore.refreshCompletionSchemas(connectionId, database).catch(() => {});
     if (supportsDatabaseQualifierCompletion()) {
       void connectionStore.refreshCompletionDatabases(connectionId).catch(() => {});
     }
   }
-  if (completionContext.insertTable) {
+  if (!onDemandOnlyColumns && completionContext.insertTable) {
     const insertTable = completionContext.insertTable;
     void connectionStore
       .refreshCompletionColumns(connectionId, database, insertTable, completionContext.insertSchema ?? props.schema)
@@ -1314,7 +1478,7 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
   }
   const qualifiedColumnTarget = completionQualifiedTableTarget(completionContext);
   const qualifiedColumnCacheKey = qualifiedColumnTarget ? completionCacheKey(qualifiedColumnTarget) : undefined;
-  if (qualifiedColumnTarget && qualifiedColumnCacheKey && !cachedColumnsByTable.has(qualifiedColumnCacheKey)) {
+  if (!onDemandOnlyColumns && qualifiedColumnTarget && qualifiedColumnCacheKey && !cachedColumnsByTable.has(qualifiedColumnCacheKey)) {
     const target = completionMetadataTarget(qualifiedColumnTarget);
     if (target) {
       void connectionStore
@@ -1325,19 +1489,21 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
         .catch(() => {});
     }
   }
-  for (const refTable of completionContext.referencedTables) {
-    if (refTable.columns && refTable.columns.length > 0) continue;
-    const cacheKey = refTable.schema ? `${refTable.schema}.${refTable.name}` : refTable.name;
-    if (cacheKey === qualifiedColumnCacheKey) continue;
-    if (cachedColumnsByTable.has(cacheKey)) continue;
-    const target = completionMetadataTarget(refTable);
-    if (!target) continue;
-    void connectionStore
-      .refreshCompletionColumns(connectionId, target.database, refTable.name, target.schema)
-      .then((columns) => {
-        if (columns.length > 0) cachedColumnsByTable.set(cacheKey, columns);
-      })
-      .catch(() => {});
+  if (!onDemandOnlyColumns) {
+    for (const refTable of completionContext.referencedTables) {
+      if (refTable.columns && refTable.columns.length > 0) continue;
+      const cacheKey = refTable.schema ? `${refTable.schema}.${refTable.name}` : refTable.name;
+      if (cacheKey === qualifiedColumnCacheKey) continue;
+      if (cachedColumnsByTable.has(cacheKey)) continue;
+      const target = completionMetadataTarget(refTable);
+      if (!target) continue;
+      void connectionStore
+        .refreshCompletionColumns(connectionId, target.database, refTable.name, target.schema)
+        .then((columns) => {
+          if (columns.length > 0) cachedColumnsByTable.set(cacheKey, columns);
+        })
+        .catch(() => {});
+    }
   }
   if ((completionContext.suggestTables || completionContext.suggestJoinConditions) && completionContext.referencedTables.length > 0) {
     void ensureForeignKeysForTables(completionContext.referencedTables);
@@ -1356,7 +1522,23 @@ function mergeCompletionTables(existing: Array<{ name: string; schema?: string; 
   return merged;
 }
 
+function withCompletionLatencyBudget<T>(remote: Promise<T>, local: T): Promise<T> {
+  return Promise.race([remote, new Promise<T>((resolve) => setTimeout(() => resolve(local), COMPLETION_REMOTE_LATENCY_BUDGET_MS))]);
+}
+
+function listCompletionTablesWithLatencyBudget(connectionId: string, database: string, filter: string, limit: number, schema?: string): Promise<SqlCompletionTable[]> {
+  const local = connectionStore.lookupLocalCompletionTables(connectionId, database, filter, limit, schema);
+  const remote = connectionStore.listCompletionTables(connectionId, database, filter, limit, schema).then((tables) => {
+    cachedTables = mergeCompletionTables(cachedTables, tables);
+    return tables;
+  });
+  if (local.length === 0) return remote;
+  return withCompletionLatencyBudget(remote, local);
+}
+
 async function performAsyncCompletionWithResult(epoch: number, completionContext: ReturnType<typeof getSqlCompletionContext>, fullDoc: string, position: number) {
+  const localOnlyMetadata = usesLocalOnlyCompletionMetadata();
+  const onDemandOnlyColumns = usesOnDemandOnlyCompletionColumns();
   // Handle INSERT column list: fetch columns for the target table
   let insertColumnsByTable = new Map<string, SqlCompletionColumn[]>();
   if (completionContext.insertTable) {
@@ -1375,7 +1557,7 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
 
   const shouldLoadTables = completionContext.suggestTables || (!!completionContext.qualifier && !isReferencedTableQualifier(completionContext));
   let databaseNames: string[] = [];
-  if (supportsDatabaseQualifierCompletion() && completionContext.suggestTables && !completionContext.insertTable) {
+  if (!localOnlyMetadata && supportsDatabaseQualifierCompletion() && completionContext.suggestTables && !completionContext.insertTable) {
     try {
       databaseNames = await connectionStore.listCompletionDatabases(props.connectionId!);
       if (epoch !== completionEpoch) return null;
@@ -1387,14 +1569,22 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
   const tableLookupDatabase = qualifierDatabase ?? props.database!;
   const tableLookupSchema = qualifierDatabase ? undefined : props.schema;
   const tableLookupFilter = completionContext.qualifier && !qualifierDatabase ? completionContext.qualifier : completionContext.prefix;
-  let tables = shouldLoadTables ? await connectionStore.listCompletionTables(props.connectionId!, tableLookupDatabase, tableLookupFilter, MAX_COMPLETION_TABLES, tableLookupSchema) : cachedTables;
+  let tables = shouldLoadTables
+    ? localOnlyMetadata
+      ? connectionStore.lookupLocalCompletionTables(props.connectionId!, tableLookupDatabase, tableLookupFilter, MAX_COMPLETION_TABLES, tableLookupSchema)
+      : await listCompletionTablesWithLatencyBudget(props.connectionId!, tableLookupDatabase, tableLookupFilter, MAX_COMPLETION_TABLES, tableLookupSchema)
+    : cachedTables;
   if (epoch !== completionEpoch) return null;
 
   const shouldLoadObjects = completionContext.suggestRoutines || completionContext.exclusiveRoutineSuggestions || (!!completionContext.qualifier && !completionContext.exclusiveColumnSuggestions);
-  let completionObjects = shouldLoadObjects ? await connectionStore.listCompletionObjects(props.connectionId!, props.database!, completionContext.qualifier || completionContext.prefix, MAX_COMPLETION_TABLES, props.schema) : cachedCompletionObjects;
+  let completionObjects = shouldLoadObjects
+    ? localOnlyMetadata
+      ? connectionStore.lookupLocalCompletionObjects(props.connectionId!, props.database!, completionContext.qualifier || completionContext.prefix, MAX_COMPLETION_TABLES, props.schema)
+      : await connectionStore.listCompletionObjects(props.connectionId!, props.database!, completionContext.qualifier || completionContext.prefix, MAX_COMPLETION_TABLES, props.schema)
+    : cachedCompletionObjects;
   if (epoch !== completionEpoch) return null;
 
-  if (completionContext.qualifier && completionObjects.length === 0) {
+  if (!localOnlyMetadata && completionContext.qualifier && completionObjects.length === 0) {
     const schemaObjects = await connectionStore.listCompletionObjects(props.connectionId!, props.database!, completionContext.prefix, MAX_COMPLETION_TABLES, completionContext.qualifier);
     if (schemaObjects.length > 0) {
       completionObjects = schemaObjects;
@@ -1406,19 +1596,25 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
   // Fetch schemas for schema completion
   let schemaNames: string[] = [];
   if (completionContext.suggestTables && !completionContext.qualifier && !completionContext.insertTable) {
-    try {
-      const schemas = await connectionStore.listCompletionSchemas(props.connectionId!, props.database!);
-      schemaNames = mergeCompletionQualifierNames(schemas, databaseNames);
-      if (epoch !== completionEpoch) return null;
-    } catch {
-      schemaNames = databaseNames;
+    if (localOnlyMetadata) {
+      schemaNames = mergeCompletionQualifierNames(connectionStore.lookupLocalCompletionSchemas(props.connectionId!, props.database!, completionContext.prefix, MAX_COMPLETION_TABLES), databaseNames);
+    } else {
+      try {
+        const schemas = await connectionStore.listCompletionSchemas(props.connectionId!, props.database!);
+        schemaNames = mergeCompletionQualifierNames(schemas, databaseNames);
+        if (epoch !== completionEpoch) return null;
+      } catch {
+        schemaNames = databaseNames;
+      }
     }
   }
 
   // If qualifier didn't match any table names, try it as a schema name
   let qualifierIsSchema = false;
   if (completionContext.qualifier && !qualifierDatabase && !isReferencedTableQualifier(completionContext) && tables.length === 0 && (completionContext.suggestTables || completionContext.exclusiveColumnSuggestions)) {
-    const schemaTables = await connectionStore.listCompletionTables(props.connectionId!, props.database!, completionContext.prefix, MAX_COMPLETION_TABLES, completionContext.qualifier);
+    const schemaTables = localOnlyMetadata
+      ? connectionStore.lookupLocalCompletionTables(props.connectionId!, props.database!, completionContext.prefix, MAX_COMPLETION_TABLES, completionContext.qualifier)
+      : await listCompletionTablesWithLatencyBudget(props.connectionId!, props.database!, completionContext.prefix, MAX_COMPLETION_TABLES, completionContext.qualifier);
     if (schemaTables.length > 0) {
       tables = schemaTables;
       qualifierIsSchema = true;
@@ -1437,7 +1633,7 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
     return rt;
   });
   const unresolvedRefs = refs.filter((rt) => !rt.schema && !rt.columns);
-  if (unresolvedRefs.length > 0) {
+  if (!localOnlyMetadata && unresolvedRefs.length > 0) {
     const lookupGroups = await Promise.all(unresolvedRefs.map((rt) => connectionStore.listCompletionTables(props.connectionId!, props.database!, rt.name, 20, props.schema)));
     if (epoch !== completionEpoch) return null;
     const lookupTables = lookupGroups.flat();
@@ -1470,23 +1666,26 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
     }
   }
 
-  await Promise.all(
-    refs.map(async (refTable) => {
-      if (refTable.columns && refTable.columns.length > 0) return;
-      const cacheKey = refTable.schema ? `${refTable.schema}.${refTable.name}` : refTable.name;
-      if (cachedColumnsByTable.has(cacheKey)) return;
-      try {
-        const target = completionMetadataTarget(refTable);
-        if (!target) return;
-        const columns = await connectionStore.listCompletionColumns(props.connectionId!, target.database, refTable.name, target.schema);
-        if (epoch !== completionEpoch) return;
-        if (columns.length === 0) return;
-        cachedColumnsByTable.set(cacheKey, columns);
-      } catch (e) {
-        console.error(`[DBX] Failed to load columns for ${cacheKey}:`, e);
-      }
-    }),
-  );
+  const shouldFetchColumnsForCompletion = !onDemandOnlyColumns || completionContext.suggestColumns || completionContext.exclusiveColumnSuggestions || !!completionContext.insertTable;
+  if (shouldFetchColumnsForCompletion) {
+    await Promise.all(
+      refs.map(async (refTable) => {
+        if (refTable.columns && refTable.columns.length > 0) return;
+        const cacheKey = refTable.schema ? `${refTable.schema}.${refTable.name}` : refTable.name;
+        if (cachedColumnsByTable.has(cacheKey)) return;
+        try {
+          const target = completionMetadataTarget(refTable);
+          if (!target) return;
+          const columns = await connectionStore.listCompletionColumns(props.connectionId!, target.database, refTable.name, target.schema);
+          if (epoch !== completionEpoch) return;
+          if (columns.length === 0) return;
+          cachedColumnsByTable.set(cacheKey, columns);
+        } catch (e) {
+          console.error(`[DBX] Failed to load columns for ${cacheKey}:`, e);
+        }
+      }),
+    );
+  }
   if (epoch !== completionEpoch) return null;
 
   if ((completionContext.suggestTables || completionContext.suggestJoinConditions) && refs.length > 0) {
@@ -1554,6 +1753,7 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
     dialect: props.dialect,
     databaseType: props.databaseType,
     keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
+    autoAliasTables: settingsStore.editorSettings.autoAliasTables,
   });
 
   return buildCompletionResult(items, position - completionContext.prefix.length, getSqlCompletionResultValidFor(fullDoc, position));
@@ -1591,10 +1791,10 @@ onMounted(async () => {
   const [
     { EditorView, keymap, rectangularSelection, hoverTooltip, showTooltip, Decoration, tooltips, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, dropCursor, crosshairCursor, ViewPlugin },
     { EditorState, Compartment, Prec, StateEffect, StateField },
-    { sql, MSSQL, MySQL, PostgreSQL, SQLDialect },
+    langSql,
     { autocompletion, startCompletion, acceptCompletion, closeBrackets, closeBracketsKeymap, snippetCompletion, completionStatus, completionKeymap },
     { copyLineDown, copyLineUp, deleteLine, indentLess, indentMore, insertNewlineKeepIndent, moveLineDown, moveLineUp, redo, selectAll, undo, history, defaultKeymap, historyKeymap },
-    { bracketMatching, foldGutter, indentOnInput, syntaxHighlighting, defaultHighlightStyle, foldKeymap },
+    { bracketMatching, foldGutter, indentOnInput, indentUnit, syntaxHighlighting, defaultHighlightStyle, foldKeymap },
     { searchKeymap },
   ] = await Promise.all([import("@codemirror/view"), import("@codemirror/state"), import("@codemirror/lang-sql"), import("@codemirror/autocomplete"), import("@codemirror/commands"), import("@codemirror/language"), import("@codemirror/search")]);
   editorViewModule = { EditorView, keymap, rectangularSelection } as typeof import("@codemirror/view");
@@ -1607,6 +1807,8 @@ onMounted(async () => {
   runKeymapComp = new Compartment();
   completionComp = new Compartment();
   diagnosticComp = new Compartment();
+  previewRangeComp = new Compartment();
+  indentComp = new Compartment();
   setSqlDiagnosticsEffect = StateEffect.define<SqlSemanticDiagnostic[]>();
   codeMirrorCompletionStatus = completionStatus;
   codeMirrorAcceptCompletion = acceptCompletion;
@@ -1622,6 +1824,7 @@ onMounted(async () => {
   codeMirrorRedo = redo;
   codeMirrorSelectAll = selectAll;
   codeMirrorInsertNewlineKeepIndent = insertNewlineKeepIndent;
+  codeMirrorIndentUnit = indentUnit;
   window.addEventListener("keyup", clearTableNavigationHoverOnModifierRelease);
   window.addEventListener("blur", clearTableNavigationHover);
 
@@ -1666,6 +1869,28 @@ onMounted(async () => {
     return [field, diagnosticTheme];
   };
 
+  setPreviewRangeEffect = StateEffect.define<{ from: number; to: number } | null>();
+  buildPreviewRangeExtension = () => {
+    const effectType = setPreviewRangeEffect!;
+    const field = StateField.define({
+      create() {
+        return Decoration.none;
+      },
+      update(decorations, transaction) {
+        for (const effect of transaction.effects) {
+          if (effect.is(effectType)) {
+            const range = effect.value;
+            if (!range) return Decoration.none;
+            return Decoration.set([Decoration.mark({ class: "cm-db-execution-preview" }).range(range.from, range.to)]);
+          }
+        }
+        return decorations;
+      },
+      provide: (f) => EditorView.decorations.from(f),
+    });
+    return field;
+  };
+
   buildSqlSignatureExtension = () =>
     showTooltip.compute(["doc", "selection"], (currentState) => {
       const signature = getSqlFunctionSignatureHelp(currentState.doc.toString(), currentState.selection.main.head);
@@ -1684,22 +1909,7 @@ onMounted(async () => {
       override: [async (context: CompletionContext) => provideSqlCompletions(context.state, context.pos, context.explicit)],
     });
 
-  const baseDialect = props.dialect === "postgres" ? PostgreSQL : props.dialect === "sqlserver" ? MSSQL : MySQL;
-  const extraKeywords = "PIVOT UNPIVOT EXCLUDE REPLACE QUALIFY ASOF POSITIONAL ANTI SEMI SAMPLE TABLESAMPLE STRUCT MAP LIST ARRAY LAMBDA UNNEST LATERAL FILTER RECURSIVE SUMMARIZE PRAGMA READ_CSV READ_PARQUET READ_JSON DESCRIBE SHOW COPY EXPORT IMPORT";
-
-  // PL/pgSQL extension: add procedural language keywords and built-in variables for PostgreSQL function/procedure bodies
-  const isPostgres = props.dialect === "postgres";
-  const plpgsqlKeywords = isPostgres ? "PERFORM" : "";
-  const plpgsqlTypes = isPostgres ? " RECORD JSON JSONB" : "";
-  const plpgsqlBuiltin = isPostgres ? "SQLERRM TG_NAME TG_WHEN TG_LEVEL TG_OP TG_RELID TG_RELNAME TG_TABLE_NAME TG_TABLE_SCHEMA TG_NARGS TG_ARGV" : "";
-
-  const dialect = SQLDialect.define({
-    ...baseDialect.spec,
-    keywords: [baseDialect.spec.keywords || "", extraKeywords, plpgsqlKeywords].filter(Boolean).join(" "),
-    types: [baseDialect.spec.types || "", plpgsqlTypes].filter(Boolean).join(" ") || undefined,
-    builtin: [baseDialect.spec.builtin || "", plpgsqlBuiltin].filter(Boolean).join(" ") || undefined,
-    doubleDollarQuotedStrings: false,
-  });
+  const dialect = createDbxCodeMirrorSqlDialect(langSql, props.dialect);
 
   const initialSettings = settingsStore.editorSettings;
   const theme = await loadEditorTheme(initialSettings.theme, editorThemeAppearance(), getCurrentCustomThemeColors());
@@ -1771,7 +1981,7 @@ onMounted(async () => {
       crosshairCursor(),
       activeLineHighlighter,
       keymap.of([...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap]),
-      sql({ dialect }),
+      langSql.sql({ dialect }),
       tooltips({ parent: document.body }),
       completionComp.of(buildSqlCompletionExtension()),
       sqlCompletionTheme(EditorView),
@@ -1781,8 +1991,10 @@ onMounted(async () => {
       hoverTooltip((currentView, pos) => resolveSqlHoverTooltip(currentView, pos)),
       buildSqlSignatureExtension(),
       diagnosticComp.of(buildSqlDiagnosticExtension()),
+      previewRangeComp.of(buildPreviewRangeExtension()),
       Prec.highest(
         keymap.of([
+          { key: "'", run: handleSqlSingleQuote },
           ...closeBracketsKeymap,
           { key: "Tab", run: handleTab },
           {
@@ -1796,6 +2008,7 @@ onMounted(async () => {
       runKeymapComp.of(runKeymapExtension(keymap)),
       wordWrapComp.of(props.forceWordWrap || initialSettings.wordWrap ? EditorView.lineWrapping : []),
       readOnlyComp.of([EditorState.readOnly.of(!!props.readOnly), EditorView.editable.of(!props.readOnly)]),
+      indentComp.of(indentExtension()),
       rectangularSelection({ eventFilter: (e: MouseEvent) => e.altKey || e.button === 1 }),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
@@ -1910,7 +2123,9 @@ onMounted(async () => {
             try {
               // Ensure table cache is populated
               if (cachedTables.length === 0) {
-                cachedTables = await connectionStore.listCompletionTables(props.connectionId!, props.database!, identifier, MAX_COMPLETION_TABLES, props.schema);
+                cachedTables = usesLocalOnlyCompletionMetadata()
+                  ? connectionStore.lookupLocalCompletionTables(props.connectionId!, props.database!, identifier, MAX_COMPLETION_TABLES, props.schema)
+                  : await connectionStore.listCompletionTables(props.connectionId!, props.database!, identifier, MAX_COMPLETION_TABLES, props.schema);
               }
 
               // 1. Check if it's a table name
@@ -2083,7 +2298,7 @@ function getCurrentCustomThemeColors() {
 
 // Reactively apply editor settings changes
 watch(
-  [() => settingsStore.editorSettings, () => isDark.value],
+  [queryEditorAppearanceSettings, () => isDark.value],
   async ([ss]) => {
     if (!view.value || !codeMirrorTheme || !fontThemeComp || !wordWrapComp || !runKeymapComp || !editorViewModule) {
       return;
@@ -2099,6 +2314,14 @@ watch(
     });
   },
   { deep: true },
+);
+
+watch(
+  () => [settingsStore.editorSettings.sqlFormatter.tabWidth, settingsStore.editorSettings.sqlFormatter.useTabs],
+  () => {
+    if (!view.value || !indentComp) return;
+    view.value.dispatch({ effects: indentComp.reconfigure(indentExtension()) });
+  },
 );
 
 watch(
@@ -2277,7 +2500,7 @@ function scrollCursorIntoView() {
   });
 }
 
-defineExpose({ openSearch, openReplace, scrollCursorIntoView });
+defineExpose({ openSearch, openReplace, scrollCursorIntoView, requestExecute });
 </script>
 
 <template>
@@ -2296,6 +2519,7 @@ defineExpose({ openSearch, openReplace, scrollCursorIntoView });
       />
     </CustomContextMenu>
     <EditorSearchPanel ref="searchPanelRef" :view="view" />
+    <SqlExecutionTargetPicker v-if="pickerVisible" :candidates="pickerCandidates" :active-index="pickerActiveIndex" :anchor="pickerAnchor" @update:active-index="onPickerActiveIndexChange" @confirm="onPickerConfirm" @cancel="closePicker" />
   </div>
 </template>
 
@@ -2303,6 +2527,10 @@ defineExpose({ openSearch, openReplace, scrollCursorIntoView });
 .query-editor--table-navigation-hover :deep(.cm-content),
 .query-editor--table-navigation-hover :deep(.cm-line) {
   cursor: pointer;
+}
+
+:deep(.cm-db-execution-preview) {
+  background: var(--dbx-editor-selection-background, rgba(59, 130, 246, 0.35));
 }
 
 :deep(.cm-foldMarker-svg) {

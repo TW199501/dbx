@@ -13,8 +13,9 @@ use std::time::Instant;
 use crate::models::connection::DatabaseType;
 use crate::sql::starts_with_executable_sql_keyword;
 use crate::types::{
-    ColumnInfo, DatabaseInfo, ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectStatistics, QueryResult, TableInfo,
-    TriggerInfo,
+    ColumnInfo, CompletionAssistantCandidate, CompletionAssistantCandidateKind, CompletionAssistantMatchMode,
+    CompletionAssistantObjectKind, CompletionAssistantRequest, CompletionAssistantResponse, DatabaseInfo,
+    ForeignKeyInfo, IndexInfo, ObjectInfo, ObjectStatistics, QueryResult, TableInfo, TriggerInfo,
 };
 
 use super::file_validator::validate_file_path;
@@ -376,7 +377,7 @@ pub async fn connect_with_ca_cert(
     ca_cert_path: Option<&str>,
     fallback_timeout: Duration,
 ) -> Result<MySqlPool, String> {
-    connect_with_ca_cert_and_pool_limit(url, ca_cert_path, fallback_timeout, 3).await
+    connect_with_ca_cert_and_pool_limit(url, ca_cert_path, fallback_timeout, 10).await
 }
 
 pub async fn connect_with_ca_cert_and_pool_limit(
@@ -417,9 +418,13 @@ fn create_pool(url: &str, ca_cert_path: Option<&str>, max_connections: usize) ->
         mysql_async::Opts::from_url(&mysql_async_url(&tls_url.url)).map_err(|e| format!("Invalid MySQL URL: {e}"))?;
     let base_ssl_opts = opts.ssl_opts().cloned();
     let max_connections = max_connections.max(1);
+    // Single-connection pools (max_connections == 1) are client session pools that
+    // must preserve session state (e.g. TEMPORARY TABLEs) across queries.
+    // Disable COM_RESET_CONNECTION for these pools to avoid clearing that state.
     let pool_opts = mysql_async::PoolOpts::new()
         .with_constraints(mysql_async::PoolConstraints::new(1, max_connections).unwrap())
-        .with_inactive_connection_ttl(Duration::from_secs(300));
+        .with_inactive_connection_ttl(Duration::from_secs(300))
+        .with_reset_connection(max_connections > 1);
     let mut builder = mysql_async::OptsBuilder::from_opts(opts)
         .stmt_cache_size(0)
         .prefer_socket(false)
@@ -1021,6 +1026,251 @@ pub async fn list_tables(pool: &MySqlPool, database: &str) -> Result<Vec<TableIn
     Ok(tables)
 }
 
+pub async fn completion_assistant_search(
+    pool: &MySqlPool,
+    request: &CompletionAssistantRequest,
+) -> Result<CompletionAssistantResponse, String> {
+    let database = request.schema.as_deref().filter(|schema| !schema.trim().is_empty()).unwrap_or(&request.database);
+    let limit = request.max_results.unwrap_or(100).clamp(1, 1000);
+    let kinds = if request.object_kinds.is_empty() {
+        vec![CompletionAssistantObjectKind::Table, CompletionAssistantObjectKind::View]
+    } else {
+        request.object_kinds.clone()
+    };
+    let pattern = mysql_completion_like_pattern(&request.mask, request.match_mode.as_ref());
+    let mut conn = pool.get_conn().await.map_err(|e| e.to_string())?;
+    let mut candidates = Vec::new();
+
+    if kinds
+        .iter()
+        .any(|kind| matches!(kind, CompletionAssistantObjectKind::Database | CompletionAssistantObjectKind::Schema))
+    {
+        let sql = mysql_completion_schemas_sql(&pattern, limit.saturating_sub(candidates.len()));
+        let result = conn.query_iter(&sql).await.map_err(|e| e.to_string())?;
+        let rows: Vec<mysql_async::Row> = result.collect_and_drop().await.map_err(|e| e.to_string())?;
+        for row in rows {
+            let schema_name = get_str_by_name(&row, "schema_name");
+            candidates.push(CompletionAssistantCandidate {
+                name: schema_name.clone(),
+                kind: CompletionAssistantCandidateKind::Schema,
+                database: Some(schema_name.clone()),
+                schema: Some(schema_name),
+                parent_schema: None,
+                parent_name: None,
+                comment: None,
+                data_type: None,
+            });
+        }
+    }
+
+    if candidates.len() < limit && kinds.iter().any(CompletionAssistantObjectKind::is_table_like) {
+        let sql = mysql_completion_tables_sql(database, &pattern, &kinds, limit.saturating_sub(candidates.len()));
+        let result = conn.query_iter(&sql).await.map_err(|e| e.to_string())?;
+        let rows: Vec<mysql_async::Row> = result.collect_and_drop().await.map_err(|e| e.to_string())?;
+        for row in rows {
+            let table_type = get_str_by_name(&row, "table_type");
+            candidates.push(CompletionAssistantCandidate {
+                name: get_str_by_name(&row, "object_name"),
+                kind: if table_type.eq_ignore_ascii_case("VIEW") {
+                    CompletionAssistantCandidateKind::View
+                } else {
+                    CompletionAssistantCandidateKind::Table
+                },
+                database: Some(database.to_string()),
+                schema: Some(database.to_string()),
+                parent_schema: None,
+                parent_name: None,
+                comment: get_opt_str(&row, "object_comment")
+                    .map(|s| fix_potential_double_encoding(&s))
+                    .filter(|s| !s.is_empty()),
+                data_type: None,
+            });
+        }
+    }
+
+    if candidates.len() < limit && kinds.iter().any(CompletionAssistantObjectKind::is_routine_like) {
+        let sql = mysql_completion_routines_sql(database, &pattern, &kinds, limit.saturating_sub(candidates.len()));
+        let result = conn.query_iter(&sql).await.map_err(|e| e.to_string())?;
+        let rows: Vec<mysql_async::Row> = result.collect_and_drop().await.map_err(|e| e.to_string())?;
+        for row in rows {
+            let routine_type = get_str_by_name(&row, "routine_type");
+            candidates.push(CompletionAssistantCandidate {
+                name: get_str_by_name(&row, "object_name"),
+                kind: if routine_type.eq_ignore_ascii_case("PROCEDURE") {
+                    CompletionAssistantCandidateKind::Procedure
+                } else {
+                    CompletionAssistantCandidateKind::Function
+                },
+                database: Some(database.to_string()),
+                schema: Some(database.to_string()),
+                parent_schema: None,
+                parent_name: None,
+                comment: get_opt_str(&row, "object_comment")
+                    .map(|s| fix_potential_double_encoding(&s))
+                    .filter(|s| !s.is_empty()),
+                data_type: get_opt_str(&row, "data_type"),
+            });
+        }
+    }
+
+    if candidates.len() < limit && kinds.iter().any(|kind| matches!(kind, CompletionAssistantObjectKind::Column)) {
+        if let Some(table) = request.parent_name.as_deref().filter(|table| !table.trim().is_empty()) {
+            let sql = mysql_completion_columns_sql(database, table, &pattern, limit.saturating_sub(candidates.len()));
+            let result = conn.query_iter(&sql).await.map_err(|e| e.to_string())?;
+            let rows: Vec<mysql_async::Row> = result.collect_and_drop().await.map_err(|e| e.to_string())?;
+            for row in rows {
+                candidates.push(CompletionAssistantCandidate {
+                    name: get_str_by_name(&row, "object_name"),
+                    kind: CompletionAssistantCandidateKind::Column,
+                    database: Some(database.to_string()),
+                    schema: Some(database.to_string()),
+                    parent_schema: Some(database.to_string()),
+                    parent_name: Some(table.to_string()),
+                    comment: get_opt_str(&row, "object_comment")
+                        .map(|s| fix_potential_double_encoding(&s))
+                        .filter(|s| !s.is_empty()),
+                    data_type: Some(get_str_by_name(&row, "data_type")),
+                });
+            }
+        }
+    }
+
+    Ok(CompletionAssistantResponse { incomplete: candidates.len() >= limit, candidates, fallback_used: false })
+}
+
+fn mysql_completion_schemas_sql(pattern: &str, limit: usize) -> String {
+    format!(
+        "SELECT SCHEMA_NAME AS schema_name \
+         FROM information_schema.SCHEMATA \
+         WHERE SCHEMA_NAME LIKE {} ESCAPE '\\\\' \
+         ORDER BY SCHEMA_NAME LIMIT {}",
+        quote_value(pattern),
+        limit,
+    )
+}
+
+fn mysql_completion_tables_sql(
+    database: &str,
+    pattern: &str,
+    kinds: &[CompletionAssistantObjectKind],
+    limit: usize,
+) -> String {
+    let table_types = mysql_completion_table_types(kinds);
+    format!(
+        "SELECT TABLE_NAME AS object_name, TABLE_TYPE AS table_type, TABLE_COMMENT AS object_comment \
+         FROM information_schema.TABLES \
+         WHERE TABLE_SCHEMA = {db} AND TABLE_NAME LIKE {pattern} ESCAPE '\\\\' AND TABLE_TYPE IN ({table_types}) \
+         ORDER BY TABLE_NAME LIMIT {limit}",
+        db = quote_value(database),
+        pattern = quote_value(pattern),
+        table_types = table_types,
+        limit = limit,
+    )
+}
+
+fn mysql_completion_routines_sql(
+    database: &str,
+    pattern: &str,
+    kinds: &[CompletionAssistantObjectKind],
+    limit: usize,
+) -> String {
+    let routine_types = mysql_completion_routine_types(kinds);
+    format!(
+        "SELECT ROUTINE_NAME AS object_name, ROUTINE_TYPE AS routine_type, ROUTINE_COMMENT AS object_comment, DATA_TYPE AS data_type \
+         FROM information_schema.ROUTINES \
+         WHERE ROUTINE_SCHEMA = {db} AND ROUTINE_NAME LIKE {pattern} ESCAPE '\\\\' AND ROUTINE_TYPE IN ({routine_types}) \
+         ORDER BY ROUTINE_NAME LIMIT {limit}",
+        db = quote_value(database),
+        pattern = quote_value(pattern),
+        routine_types = routine_types,
+        limit = limit,
+    )
+}
+
+fn mysql_completion_columns_sql(database: &str, table: &str, pattern: &str, limit: usize) -> String {
+    format!(
+        "SELECT COLUMN_NAME AS object_name, COLUMN_TYPE AS data_type, COLUMN_COMMENT AS object_comment \
+         FROM information_schema.COLUMNS \
+         WHERE TABLE_SCHEMA = {db} AND TABLE_NAME = {table} AND COLUMN_NAME LIKE {pattern} ESCAPE '\\\\' \
+         ORDER BY ORDINAL_POSITION LIMIT {limit}",
+        db = quote_value(database),
+        table = quote_value(table),
+        pattern = quote_value(pattern),
+        limit = limit,
+    )
+}
+
+fn mysql_completion_table_types(kinds: &[CompletionAssistantObjectKind]) -> String {
+    let mut types = Vec::new();
+    if kinds.iter().any(|kind| matches!(kind, CompletionAssistantObjectKind::Table)) {
+        types.push("'BASE TABLE'");
+        types.push("'SYSTEM VERSIONED'");
+    }
+    if kinds.iter().any(|kind| matches!(kind, CompletionAssistantObjectKind::View)) {
+        types.push("'VIEW'");
+    }
+    if types.is_empty() {
+        "'BASE TABLE','VIEW'".to_string()
+    } else {
+        types.join(",")
+    }
+}
+
+fn mysql_completion_routine_types(kinds: &[CompletionAssistantObjectKind]) -> String {
+    let mut types = Vec::new();
+    if kinds
+        .iter()
+        .any(|kind| matches!(kind, CompletionAssistantObjectKind::Procedure | CompletionAssistantObjectKind::Routine))
+    {
+        types.push("'PROCEDURE'");
+    }
+    if kinds
+        .iter()
+        .any(|kind| matches!(kind, CompletionAssistantObjectKind::Function | CompletionAssistantObjectKind::Routine))
+    {
+        types.push("'FUNCTION'");
+    }
+    if types.is_empty() {
+        "'PROCEDURE','FUNCTION'".to_string()
+    } else {
+        types.join(",")
+    }
+}
+
+fn mysql_completion_like_pattern(value: &str, mode: Option<&CompletionAssistantMatchMode>) -> String {
+    if value.trim().is_empty() || value == "%" {
+        return "%".to_string();
+    }
+    let escaped = value.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    match mode.unwrap_or(&CompletionAssistantMatchMode::Prefix) {
+        CompletionAssistantMatchMode::Prefix => format!("{escaped}%"),
+        CompletionAssistantMatchMode::Contains => format!("%{escaped}%"),
+    }
+}
+
+fn table_comment_sql(database: &str, table: &str) -> String {
+    format!(
+        "SELECT TABLE_COMMENT \
+         FROM information_schema.TABLES \
+         WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} AND TABLE_TYPE <> 'VIEW' \
+         LIMIT 1",
+        quote_value(database),
+        quote_value(table),
+    )
+}
+
+pub async fn get_table_comment(pool: &MySqlPool, database: &str, table: &str) -> Result<Option<String>, String> {
+    let sql = table_comment_sql(database, table);
+    let mut conn = pool.get_conn().await.map_err(|e| e.to_string())?;
+    let result = conn.query_iter(&sql).await.map_err(|e| e.to_string())?;
+    let rows: Vec<mysql_async::Row> = result.collect_and_drop().await.map_err(|e| e.to_string())?;
+    Ok(rows
+        .first()
+        .and_then(|row| get_opt_str(row, "TABLE_COMMENT"))
+        .map(|s| fix_potential_double_encoding(&s))
+        .filter(|s| !s.is_empty()))
+}
+
 #[derive(Clone, Debug, Default)]
 struct TableStatusMeta {
     comment: Option<String>,
@@ -1297,15 +1547,8 @@ pub async fn list_completion_objects(pool: &MySqlPool, database: &str) -> Result
 fn columns_sql(database: &str, table: &str) -> String {
     format!(
         "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE, c.COLUMN_DEFAULT, c.EXTRA, \
-         c.COLUMN_COMMENT, \
-         c.COLUMN_KEY, c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.CHARACTER_MAXIMUM_LENGTH, \
-         CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS is_pk \
+         c.COLUMN_COMMENT, c.COLUMN_KEY, c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.CHARACTER_MAXIMUM_LENGTH \
          FROM information_schema.COLUMNS c \
-         LEFT JOIN information_schema.KEY_COLUMN_USAGE pk \
-           ON pk.TABLE_SCHEMA = c.TABLE_SCHEMA \
-           AND pk.TABLE_NAME = c.TABLE_NAME \
-           AND pk.COLUMN_NAME = c.COLUMN_NAME \
-           AND pk.CONSTRAINT_NAME = 'PRIMARY' \
          WHERE c.TABLE_SCHEMA = {} AND c.TABLE_NAME = {} \
          ORDER BY c.ORDINAL_POSITION",
         quote_value(database),
@@ -1399,9 +1642,8 @@ pub async fn get_columns(pool: &MySqlPool, database: &str, table: &str) -> Resul
                 return None;
             }
             let column_key = get_str_by_name(row, "COLUMN_KEY");
-            let from_pk_join = row.get::<i32, &str>("is_pk").unwrap_or(0) == 1;
             Some(ColumnInfo {
-                is_primary_key: from_pk_join || column_key.eq_ignore_ascii_case("PRI"),
+                is_primary_key: column_key.eq_ignore_ascii_case("PRI"),
                 name,
                 data_type: get_str_by_name(row, "COLUMN_TYPE"),
                 is_nullable: get_str_by_name(row, "IS_NULLABLE") == "YES",
@@ -1589,14 +1831,31 @@ fn skip_mysql_quoted(sql: &str, start: usize, quote: u8) -> usize {
 /// Get a connection from the pool with a health check. If the connection is dead
 /// (e.g. after app was backgrounded), it tries again with a fresh connection.
 pub async fn get_conn_with_health_check(pool: &MySqlPool) -> Result<mysql_async::Conn, String> {
-    let mut conn = pool.get_conn().await.map_err(|e| e.to_string())?;
-    match tokio::time::timeout(crate::db::connection_timeout(), conn.ping()).await {
-        Ok(Ok(())) => Ok(conn),
+    let timeout = crate::db::connection_timeout();
+    let mut conn = get_conn_with_timeout(pool, timeout).await?;
+    match ping_conn_with_timeout(&mut conn, timeout).await {
+        Ok(()) => Ok(conn),
         _ => {
-            let _ = conn.disconnect().await;
-            pool.get_conn().await.map_err(|e| e.to_string())
+            let _ = tokio::time::timeout(timeout, conn.disconnect()).await;
+            let mut conn = get_conn_with_timeout(pool, timeout).await?;
+            ping_conn_with_timeout(&mut conn, timeout).await?;
+            Ok(conn)
         }
     }
+}
+
+async fn get_conn_with_timeout(pool: &MySqlPool, timeout: Duration) -> Result<mysql_async::Conn, String> {
+    tokio::time::timeout(timeout, pool.get_conn())
+        .await
+        .map_err(|_| "MySQL get connection timed out".to_string())?
+        .map_err(|e| e.to_string())
+}
+
+async fn ping_conn_with_timeout(conn: &mut mysql_async::Conn, timeout: Duration) -> Result<(), String> {
+    tokio::time::timeout(timeout, conn.ping())
+        .await
+        .map_err(|_| "MySQL ping timed out".to_string())?
+        .map_err(|e| e.to_string())
 }
 
 async fn execute_result_set_with_text_protocol_on_conn(
@@ -1725,6 +1984,16 @@ pub async fn execute_query_with_max_rows(
 ) -> Result<QueryResult, String> {
     let mut conn = get_conn_with_health_check(pool).await?;
     execute_query_on_conn_with_max_rows(&mut conn, sql, bare, max_rows, dialect).await
+}
+
+pub async fn kill_query(pool: &MySqlPool, connection_id: u32) -> Result<(), String> {
+    let mut conn = pool.get_conn().await.map_err(|e| e.to_string())?;
+    conn.query_drop(format!("KILL QUERY {connection_id}")).await.map_err(|e| e.to_string())
+}
+
+pub async fn kill_query_with_opts(opts: mysql_async::Opts, connection_id: u32) -> Result<(), String> {
+    let mut conn = mysql_async::Conn::new(opts).await.map_err(|e| e.to_string())?;
+    conn.query_drop(format!("KILL QUERY {connection_id}")).await.map_err(|e| e.to_string())
 }
 
 pub async fn execute_query_on_conn_with_max_rows(
@@ -2069,6 +2338,18 @@ mod tests {
     }
 
     #[test]
+    fn mysql_table_comment_sql_targets_single_table() {
+        let sql = table_comment_sql("app", "users");
+
+        assert!(sql.contains("SELECT TABLE_COMMENT"));
+        assert!(sql.contains("TABLE_SCHEMA = 'app'"));
+        assert!(sql.contains("TABLE_NAME = 'users'"));
+        assert!(sql.contains("TABLE_TYPE <> 'VIEW'"));
+        assert!(sql.contains("LIMIT 1"));
+        assert!(!sql.contains("ORDER BY"));
+    }
+
+    #[test]
     fn mysql_database_infos_filter_blank_names_and_keep_catalogless_marker() {
         let regular = database_infos_from_names(vec!["".to_string(), " app ".to_string(), "mysql".to_string()], true);
         assert_eq!(regular.iter().map(|db| db.name.as_str()).collect::<Vec<_>>(), vec!["app", "mysql"]);
@@ -2113,11 +2394,43 @@ mod tests {
     }
 
     #[test]
-    fn mysql_columns_sql_joins_key_column_usage_for_primary_keys() {
+    fn mysql_completion_like_pattern_uses_prefix_by_default() {
+        assert_eq!(mysql_completion_like_pattern("Temp", Some(&CompletionAssistantMatchMode::Prefix)), "Temp%");
+        assert_eq!(mysql_completion_like_pattern("Temp", Some(&CompletionAssistantMatchMode::Contains)), "%Temp%");
+        assert_eq!(
+            mysql_completion_like_pattern("order_100%", Some(&CompletionAssistantMatchMode::Prefix)),
+            "order\\_100\\%%"
+        );
+    }
+
+    #[test]
+    fn mysql_completion_sql_filters_before_limit() {
+        let table_sql = mysql_completion_tables_sql(
+            "app",
+            "Temp%",
+            &[CompletionAssistantObjectKind::Table, CompletionAssistantObjectKind::View],
+            100,
+        );
+        let routine_sql =
+            mysql_completion_routines_sql("app", "%audit%", &[CompletionAssistantObjectKind::Routine], 50);
+        let column_sql = mysql_completion_columns_sql("app", "users", "id%", 25);
+
+        assert!(table_sql.contains("TABLE_NAME LIKE 'Temp%' ESCAPE '\\\\'"));
+        assert!(table_sql.contains("TABLE_TYPE IN ('BASE TABLE','SYSTEM VERSIONED','VIEW')"));
+        assert!(table_sql.contains("ORDER BY TABLE_NAME LIMIT 100"));
+        assert!(routine_sql.contains("ROUTINE_NAME LIKE '%audit%' ESCAPE '\\\\'"));
+        assert!(routine_sql.contains("ROUTINE_TYPE IN ('PROCEDURE','FUNCTION')"));
+        assert!(column_sql.contains("COLUMN_NAME LIKE 'id%' ESCAPE '\\\\'"));
+        assert!(column_sql.contains("ORDER BY ORDINAL_POSITION LIMIT 25"));
+    }
+
+    #[test]
+    fn mysql_columns_sql_uses_column_key_for_primary_keys_without_join() {
         let sql = columns_sql("app", "users");
 
-        assert!(sql.contains("LEFT JOIN information_schema.KEY_COLUMN_USAGE"));
-        assert!(sql.contains("CONSTRAINT_NAME = 'PRIMARY'"));
+        assert!(sql.contains("information_schema.COLUMNS"));
+        assert!(!sql.contains("KEY_COLUMN_USAGE"));
+        assert!(!sql.contains("CONSTRAINT_NAME = 'PRIMARY'"));
         assert!(sql.contains("c.COLUMN_KEY"));
         assert!(!sql.contains("COLLATE"));
     }
@@ -2186,11 +2499,9 @@ mod tests {
     }
 
     #[test]
-    fn mysql_column_key_marks_primary_when_pk_join_returns_null() {
-        // COLUMN_KEY='PRI' provides a fallback when KEY_COLUMN_USAGE LEFT JOIN returns NULL
-        let from_pk_join = false;
+    fn mysql_column_key_marks_primary() {
         let column_key = "PRI";
-        let is_pk = from_pk_join || column_key.eq_ignore_ascii_case("PRI");
+        let is_pk = column_key.eq_ignore_ascii_case("PRI");
         assert!(is_pk);
     }
 

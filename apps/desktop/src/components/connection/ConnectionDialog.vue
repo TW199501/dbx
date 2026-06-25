@@ -15,6 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Switch } from "@/components/ui/switch";
 import type { ConnectionConfig, DatabaseType, JdbcDriverInfo, JdbcMavenBundleInfo, ProxyTunnelConfig, SshTunnelConfig, TransportLayerConfig } from "@/types/database";
 import type { MqAdminConfig, MqAuth, MqSystemKind } from "@/types/mq";
+import type { NacosAdminConfig, NacosAuthConfig } from "@/types/nacos";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
@@ -25,14 +26,19 @@ import { applyParsedConnectionUrl, normalizeMongoConnectionString, parseConnecti
 import type { ConnectionDeepLinkDraft } from "@/lib/connectionDeepLink";
 import { connectionUrlPlaceholder as getUrlPlaceholder } from "@/lib/connectionPresentation";
 import { h2ConnectionModeForConfig, h2FileJdbcUrl, h2FilePathFromJdbcUrl, type H2ConnectionMode } from "@/lib/h2Connection";
+import { firstZooKeeperEndpoint, normalizeZooKeeperConnectString } from "@/lib/zookeeperConnection";
 import { isLocalFileTypeDb } from "@/lib/connectionFile";
 import { MQ_PINNED_VERSION_OPTIONS, pinnedVersionToSelection, selectionToPinnedVersion } from "@/lib/mqPinnedVersionOptions";
 import { mongodbAuthFailureHint, mongoUrlParam, setMongoUrlParam } from "@/lib/mongoConnectionOptions";
 import { copyToClipboard } from "@/lib/clipboard";
 import { showAgentDriverInstallHint, type AgentDriverInstallState } from "@/lib/agentDriverInstallHint";
+import { prestoSqlBuiltinDriverPaths } from "@/lib/prestoSqlBuiltinDriver";
+import { SQLITE_DATABASE_FILE_EXTENSIONS } from "@/lib/databaseFileDetection";
 import { ArrowLeft, ArrowDown, ArrowUp, CheckSquare, ChevronRight, CircleHelp, Copy, ExternalLink, FilePlus2, FolderOpen, GripVertical, Grid3X3, KeyRound, Link2, List, ListFilter, Loader2, Pipette, Plus, Search, ShieldCheck, Square, Trash2 } from "@lucide/vue";
 import { buildDraftVisibleDatabasesConnectionId, connectionCanChooseVisibleDatabases, initialVisibleDatabaseSelection, visibleDatabaseSelectionIsStale } from "@/lib/connectionVisibleDatabases";
-import { canSaveVisibleDatabaseSelection, filterDatabaseNamesForConnection, isSystemDatabaseName, normalizeVisibleDatabaseSelection } from "@/lib/visibleDatabases";
+import { canSaveVisibleDatabaseSelection, filterDatabaseNamesForConnection, isSystemDatabaseName, normalizeVisibleDatabaseSelection, buildDraftVisibleSchemasConnectionId } from "@/lib/visibleDatabases";
+import { isSchemaAware } from "@/lib/databaseFeatureSupport";
+import VisibleSchemasDialog from "@/components/sidebar/VisibleSchemasDialog.vue";
 
 type DbOption = { value: string; label: string };
 type DbCategory = { key: string; title: string; options: DbOption[] };
@@ -40,11 +46,16 @@ type DialogStep = "select" | "config";
 type DbPickerView = "icon" | "list";
 type ConfigTab = "connection" | "advanced" | "tls" | "transport";
 type MqTokenSigningMode = "none" | "hs256" | "rs256";
+type NacosAuthKind = NacosAuthConfig["kind"];
 type JdbcDriverSelectItem = {
   id: string;
   label: string;
   paths: string[];
 };
+
+const NACOS_DEFAULT_CONSOLE_URL = "http://127.0.0.1:8085";
+const NACOS_LEGACY_SERVER_PORT = "8848";
+const NACOS_DOCKER_CONSOLE_PORT = "8085";
 
 type LegacyTransportFields = {
   ssh_enabled?: boolean;
@@ -97,6 +108,11 @@ const visibleDatabaseSelection = ref<Set<string>>(new Set());
 const visibleDatabaseSearchText = ref("");
 const visibleDatabaseError = ref("");
 const visibleDatabaseShowSystem = ref(false);
+const showVisibleSchemasDialog = ref(false);
+const isLoadingVisibleSchemas = ref(false);
+const visibleSchemaNames = ref<string[]>([]);
+const visibleSchemaInitialSelection = ref<string[]>([]);
+const visibleSchemaError = ref("");
 let testRunId = 0;
 
 const defaultForm = (): ConnectionForm => ({
@@ -112,7 +128,7 @@ const defaultForm = (): ConnectionForm => ({
   database: undefined,
   color: "",
   transport_layers: [],
-  connect_timeout_secs: 5,
+  connect_timeout_secs: 10,
   query_timeout_secs: 30,
   idle_timeout_secs: 60,
   keepalive_interval_secs: 0,
@@ -305,6 +321,14 @@ const mqTlsSkipVerify = ref(false);
 const mqPinnedVersion = ref(pinnedVersionToSelection(undefined));
 const mqTokenSigningMode = ref<MqTokenSigningMode>("none");
 const mqTokenSigningKey = ref("");
+const nacosServerAddr = ref(NACOS_DEFAULT_CONSOLE_URL);
+const nacosNamespace = ref("");
+const nacosContextPath = ref("");
+const nacosAuthKind = ref<NacosAuthKind>("none");
+const nacosUsername = ref("nacos");
+const nacosPassword = ref("");
+const nacosTlsSkipVerify = ref(false);
+const nacosPageSize = ref(20);
 
 const colorOptions = [
   { value: "", class: "bg-transparent border-dashed", labelKey: "connection.colorNone" },
@@ -391,6 +415,7 @@ const driverProfiles: Record<
   duckdb: { type: "duckdb", port: 0, user: "", label: "DuckDB", icon: "duckdb" },
   access: { type: "access", port: 0, user: "", label: "Microsoft Access", icon: "access" },
   mongodb: { type: "mongodb", port: 27017, user: "", label: "MongoDB", icon: "mongodb" },
+  "mongodb-legacy": { type: "mongodb", port: 27017, user: "", label: "MongoDB (Legacy)", icon: "mongodb" },
   clickhouse: {
     type: "clickhouse",
     port: 8123,
@@ -409,6 +434,7 @@ const driverProfiles: Record<
   },
   qdrant: { type: "qdrant", port: 6333, user: "", label: "Qdrant", icon: "qdrant" },
   milvus: { type: "milvus", port: 19530, user: "root", label: "Milvus", icon: "milvus" },
+  weaviate: { type: "weaviate", port: 8080, user: "", label: "Weaviate", icon: "weaviate" },
   mariadb: { type: "mysql", port: 3306, user: "root", label: "MariaDB", icon: "mariadb" },
   tidb: { type: "mysql", port: 4000, user: "root", label: "TiDB", icon: "tidb" },
   oceanbase: { type: "mysql", port: 2881, user: "root", label: "OceanBase", icon: "oceanbase" },
@@ -484,6 +510,7 @@ const driverProfiles: Record<
   h2: { type: "h2", port: 9092, user: "sa", label: "H2", icon: "h2" },
   snowflake: { type: "snowflake", port: 443, user: "", label: "Snowflake", icon: "snowflake" },
   trino: { type: "trino", port: 8080, user: "", label: "Trino", icon: "trino" },
+  prestosql: { type: "prestosql", port: 8080, user: "", label: "PrestoSQL", icon: "presto" },
   hive: { type: "hive", port: 10000, user: "", label: "Apache Hive", icon: "hive" },
   db2: { type: "db2", port: 50000, user: "db2inst1", label: "IBM DB2", icon: "db2" },
   informix: { type: "informix", port: 9088, user: "informix", label: "Informix", icon: "informix" },
@@ -504,7 +531,9 @@ const driverProfiles: Record<
   xugu: { type: "xugu", port: 5138, user: "", label: "虚谷 XuguDB", icon: "xugu" },
   iotdb: { type: "iotdb", port: 6667, user: "root", label: "Apache IoTDB", icon: "iotdb" },
   etcd: { type: "etcd", port: 2379, user: "", label: "etcd", icon: "etcd" },
+  zookeeper: { type: "zookeeper", port: 2181, user: "", label: "Apache ZooKeeper", icon: "zookeeper" },
   mq: { type: "mq", port: 8080, user: "", label: "Apache Pulsar", icon: "pulsar", host: "127.0.0.1" },
+  nacos: { type: "nacos", port: 8848, user: "nacos", label: "Nacos", icon: "nacos", host: "127.0.0.1" },
   iris: { type: "iris", port: 1972, user: "_SYSTEM", label: "IRIS", icon: "iris" },
   influxdb: { type: "influxdb", port: 8086, user: "", label: "InfluxDB", icon: "InfluxDB" },
   custom_mysql: {
@@ -570,6 +599,26 @@ function hydrateMqFields(value: unknown) {
   resetMqFields(value as Partial<MqAdminConfig>);
 }
 
+function resetNacosFields(config?: Partial<NacosAdminConfig>) {
+  nacosServerAddr.value = config?.serverAddr?.trim() || NACOS_DEFAULT_CONSOLE_URL;
+  nacosNamespace.value = config?.namespace || "";
+  nacosContextPath.value = config?.contextPath || "";
+  nacosTlsSkipVerify.value = !!config?.tlsSkipVerify;
+  nacosPageSize.value = Number(config?.pageSize) > 0 ? Number(config?.pageSize) : 20;
+  const auth = (config?.auth || { kind: "none" }) as NacosAuthConfig;
+  nacosAuthKind.value = auth.kind || "none";
+  nacosUsername.value = auth.username || "nacos";
+  nacosPassword.value = auth.password || "";
+}
+
+function hydrateNacosFields(value: unknown) {
+  if (!value || typeof value !== "object") {
+    resetNacosFields();
+    return;
+  }
+  resetNacosFields(value as Partial<NacosAdminConfig>);
+}
+
 function requireMqField(value: string, message: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new Error(message);
@@ -625,6 +674,65 @@ function buildMqAdminConfig(): MqAdminConfig {
   };
 }
 
+function buildNacosAuth(): NacosAuthConfig {
+  if (nacosAuthKind.value === "usernamePassword") {
+    return {
+      kind: "usernamePassword",
+      username: requireMqField(nacosUsername.value, t("connection.nacosUsernameRequired")),
+      password: nacosPassword.value,
+    };
+  }
+  return { kind: "none" };
+}
+
+function buildNacosAdminConfig(): NacosAdminConfig {
+  return {
+    serverAddr: requireMqField(nacosServerAddr.value, t("connection.nacosConsoleUrlRequired")),
+    namespace: nacosNamespace.value.trim() || undefined,
+    contextPath: nacosContextPath.value.trim(),
+    auth: buildNacosAuth(),
+    tlsSkipVerify: nacosTlsSkipVerify.value || undefined,
+    pageSize: Number(nacosPageSize.value) > 0 ? Number(nacosPageSize.value) : 20,
+  };
+}
+
+function dockerNacosConsoleFallbackUrl(serverAddr: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(serverAddr);
+  } catch {
+    return null;
+  }
+  const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+  const host = parsed.hostname.toLowerCase();
+  if (port !== NACOS_LEGACY_SERVER_PORT || !["127.0.0.1", "localhost", "::1"].includes(host)) {
+    return null;
+  }
+  parsed.port = NACOS_DOCKER_CONSOLE_PORT;
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function isNacosAdminEndpointNotFound(message: string): boolean {
+  return /Nacos admin endpoint was not found/i.test(message);
+}
+
+async function tryNacosDockerConsoleFallback(config: ConnectionConfig, originalError: string): Promise<string | null> {
+  if (config.db_type !== "nacos" || !isNacosAdminEndpointNotFound(originalError)) return null;
+  const fallbackUrl = dockerNacosConsoleFallbackUrl(nacosServerAddr.value);
+  if (!fallbackUrl || fallbackUrl === nacosServerAddr.value.trim()) return null;
+
+  const previousUrl = nacosServerAddr.value;
+  nacosServerAddr.value = fallbackUrl;
+  try {
+    const fallbackConfig = connectionConfigForSubmit(config.id);
+    const message = await api.testConnection(fallbackConfig);
+    return `${message} ${t("connection.nacosConsoleUrlAutoAdjusted", { from: previousUrl.trim(), to: fallbackUrl })}`;
+  } catch {
+    nacosServerAddr.value = previousUrl;
+    return null;
+  }
+}
+
 function applyMqAdminUrl(config: LegacyConnectionConfig, adminUrl: string) {
   let parsed: URL;
   try {
@@ -633,6 +741,19 @@ function applyMqAdminUrl(config: LegacyConnectionConfig, adminUrl: string) {
     throw new Error("MQ Admin URL is invalid");
   }
   const port = Number(parsed.port) || (parsed.protocol === "https:" ? 443 : 8080);
+  config.host = parsed.hostname;
+  config.port = port;
+  config.ssl = parsed.protocol === "https:";
+}
+
+function applyNacosServerAddr(config: LegacyConnectionConfig, serverAddr: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(serverAddr);
+  } catch {
+    throw new Error("Nacos server address is invalid");
+  }
+  const port = Number(parsed.port) || (parsed.protocol === "https:" ? 443 : 8848);
   config.host = parsed.hostname;
   config.port = port;
   config.ssl = parsed.protocol === "https:";
@@ -674,10 +795,32 @@ function applyProfile(val: string, preserveConnectionFields = false) {
       form.value.jdbc_driver_paths = [];
       jdbcDriverPathsInput.value = "";
     }
+    if (profile.type === "prestosql") {
+      form.value.connection_string = undefined;
+      form.value.jdbc_driver_class = "io.prestosql.jdbc.PrestoDriver";
+      form.value.jdbc_driver_paths = [];
+      jdbcDriverPathsInput.value = "";
+      jdbcManualClasspathOpen.value = true;
+      applyPrestoSqlBuiltinDriverPathsIfAvailable();
+    }
     if (profile.type === "mq") {
       resetMqFields();
       form.value.database = undefined;
       form.value.connection_string = undefined;
+    }
+    if (profile.type === "zookeeper") {
+      form.value.database = undefined;
+      form.value.connection_string = "";
+      form.value.ssl = false;
+      form.value.ca_cert_path = "";
+      form.value.client_cert_path = "";
+      form.value.client_key_path = "";
+    }
+    if (profile.type === "nacos") {
+      resetNacosFields();
+      form.value.database = undefined;
+      form.value.connection_string = undefined;
+      form.value.url_params = "";
     }
   }
 }
@@ -720,7 +863,7 @@ watch(
         database: config.database,
         color: config.color || "",
         transport_layers: transportLayersForConfig(legacyConfig),
-        connect_timeout_secs: config.connect_timeout_secs || 5,
+        connect_timeout_secs: config.connect_timeout_secs || 10,
         query_timeout_secs: config.query_timeout_secs ?? 30,
         idle_timeout_secs: config.idle_timeout_secs ?? 60,
         keepalive_interval_secs: config.keepalive_interval_secs ?? 0,
@@ -751,6 +894,11 @@ watch(
       } else {
         resetMqFields();
       }
+      if (config.db_type === "nacos") {
+        hydrateNacosFields(config.external_config);
+      } else {
+        resetNacosFields();
+      }
       h2ConnectionMode.value = h2ConnectionModeForConfig(config);
       customColorInput.value = config.color || "";
       selectedTransportLayerId.value = form.value.transport_layers?.[0]?.id || null;
@@ -763,6 +911,7 @@ watch(
       }
       mongoUseUrl.value = !!config.connection_string;
       jdbcDriverPathsInput.value = (config.jdbc_driver_paths || []).join("\n");
+      jdbcManualClasspathOpen.value = config.db_type === "prestosql" || (config.jdbc_driver_paths || []).length > 0;
       customDriverName.value = isCustomCompatibleProfile() ? config.driver_label || "" : "";
       dialogStep.value = "config";
       configTab.value = "connection";
@@ -773,6 +922,7 @@ watch(
       selectedType.value = "mysql";
       customDriverName.value = "";
       resetMqFields();
+      resetNacosFields();
       oceanbaseSubMode.value = "mysql";
       h2ConnectionMode.value = "file";
       dialogStep.value = "select";
@@ -837,6 +987,7 @@ function onDbTypeChange(val: string) {
   customDriverName.value = "";
   applyProfile(val, !!editingId.value);
   resetTestState();
+  resetVisibleSchemasState();
 }
 
 function switchH2ConnectionMode(mode: H2ConnectionMode) {
@@ -874,6 +1025,7 @@ const iconTypeMap: Record<string, string> = {
   elasticsearch: "elasticsearch",
   qdrant: "qdrant",
   milvus: "milvus",
+  weaviate: "weaviate",
   mariadb: "mariadb",
   tidb: "tidb",
   oceanbase: "oceanbase",
@@ -908,11 +1060,14 @@ const iconTypeMap: Record<string, string> = {
   xugu: "xugu",
   iotdb: "iotdb",
   etcd: "etcd",
+  zookeeper: "zookeeper",
   mq: "mq",
+  nacos: "nacos",
   dm: "dm",
   h2: "h2",
   snowflake: "snowflake",
   trino: "trino",
+  prestosql: "prestosql",
   hive: "hive",
   db2: "db2",
   informix: "informix",
@@ -939,6 +1094,7 @@ const dbOptions: DbOption[] = [
   { value: "elasticsearch", label: "Elasticsearch" },
   { value: "qdrant", label: "Qdrant" },
   { value: "milvus", label: "Milvus" },
+  { value: "weaviate", label: "Weaviate" },
   { value: "dm", label: "DM (Dameng)" },
   { value: "opengauss", label: "openGauss" },
   { value: "turso", label: "Turso" },
@@ -977,6 +1133,7 @@ const dbOptions: DbOption[] = [
   { value: "h2", label: "H2" },
   { value: "snowflake", label: "Snowflake" },
   { value: "trino", label: "Trino" },
+  { value: "prestosql", label: "PrestoSQL" },
   { value: "hive", label: "Hive" },
   { value: "db2", label: "DB2" },
   { value: "informix", label: "Informix" },
@@ -988,7 +1145,9 @@ const dbOptions: DbOption[] = [
   { value: "xugu", label: "虚谷 XuguDB" },
   { value: "iotdb", label: "Apache IoTDB" },
   { value: "etcd", label: "etcd" },
+  { value: "zookeeper", label: "Apache ZooKeeper" },
   { value: "mq", label: "Apache Pulsar" },
+  { value: "nacos", label: "Nacos" },
   { value: "influxdb", label: "InfluxDB" },
   { value: "iris", label: "IRIS" },
   { value: "jdbc", label: "JDBC" },
@@ -1022,7 +1181,9 @@ const filteredDbCategories = computed<DbCategory[]>(() => {
 
 const hasDbPickerResults = computed(() => filteredDbCategories.value.some((category) => category.options.length > 0));
 const selectedDbIcon = computed(() => iconTypeMap[selectedType.value] || selectedProfile().icon || selectedType.value);
+const jdbcBackedDatabaseTypes = new Set<DatabaseType>(["jdbc", "prestosql"]);
 const isJdbcConnection = computed(() => form.value.db_type === "jdbc");
+const isPrestoSqlConnection = computed(() => form.value.db_type === "prestosql");
 const isH2FileMode = computed(() => form.value.db_type === "h2" && h2ConnectionMode.value === "file");
 const usesLocalFilePathInput = computed(() => isLocalFileTypeDb(form.value.db_type) && (form.value.db_type !== "h2" || isH2FileMode.value));
 
@@ -1040,7 +1201,7 @@ const sqliteExtensionPaths = computed({
     form.value.url_params = setSqliteExtensionPaths(form.value.url_params, value);
   },
 });
-const tlsCapableDatabaseTypes = new Set<DatabaseType>(["mysql", "postgres", "redshift", "gaussdb", "kwdb", "opengauss", "questdb", "redis", "etcd", "clickhouse", "elasticsearch", "qdrant", "milvus", "influxdb"]);
+const tlsCapableDatabaseTypes = new Set<DatabaseType>(["mysql", "postgres", "redshift", "gaussdb", "kwdb", "opengauss", "questdb", "redis", "etcd", "clickhouse", "elasticsearch", "qdrant", "milvus", "weaviate", "influxdb"]);
 const supportsTlsToggle = computed(() => tlsCapableDatabaseTypes.has(form.value.db_type));
 const supportsCaCertificatePath = computed(() => form.value.db_type === "clickhouse");
 const supportsGenericUrlParams = computed(() => form.value.db_type !== "manticoresearch");
@@ -1110,6 +1271,12 @@ const etcdEndpointsLines = computed({
     form.value.etcd_endpoints = normalizeEndpointLines(value);
   },
 });
+const zookeeperConnectString = computed({
+  get: () => form.value.connection_string || "",
+  set: (value: string) => {
+    form.value.connection_string = normalizeZooKeeperConnectString(value);
+  },
+});
 const canUseTransportLayers = computed(() => form.value.db_type !== "sqlite" && form.value.db_type !== "access" && !isH2FileMode.value);
 const shouldShowAgentDriverInstallHint = computed(() => showAgentDriverInstallHint(form.value.db_type, agentDrivers.value, form.value.driver_profile));
 const h2DriverMissing = computed(() => form.value.db_type === "h2" && isH2FileMode.value && agentDrivers.value.find((d) => d.db_type === "h2")?.installed !== true);
@@ -1137,12 +1304,26 @@ const visibleDatabaseHasSystemDatabases = computed(() => {
   const connection = connectionConfigSnapshotForVisibleDatabases();
   return visibleDatabaseNames.value.some((database) => isSystemDatabaseName(connection.db_type, database));
 });
+const canChooseVisibleSchemas = computed(() => isSchemaAware(form.value.db_type));
+const visibleSchemasDatabaseKey = computed(() => form.value.database || "");
+const hasVisibleSchemaFilter = computed(() => {
+  const key = visibleSchemasDatabaseKey.value;
+  return Array.isArray(form.value.visible_schemas?.[key]);
+});
+const visibleSchemaSummary = computed(() => {
+  const key = visibleSchemasDatabaseKey.value;
+  const configured = form.value.visible_schemas?.[key];
+  if (!configured?.length) return t("visibleSchemas.showAll");
+  return t("visibleSchemas.selectedCount", { selected: configured.length, total: visibleSchemaNames.value.length });
+});
 const testResultMessage = computed(() => {
   if (!testResult.value) return "";
   return testResult.value.ok ? t("connection.testSuccess") : testResult.value.message;
 });
 const hasRequiredConnectionTarget = computed(() => {
   if (form.value.db_type === "mq") return !!mqAdminUrl.value.trim();
+  if (form.value.db_type === "zookeeper") return !!(form.value.host || form.value.connection_string || connectionUrlInput.value.trim());
+  if (form.value.db_type === "nacos") return !!nacosServerAddr.value.trim();
   if (isH2FileMode.value) return !!(form.value.host.trim() || h2FilePathFromJdbcUrl(form.value.connection_string));
   return !!(form.value.host || (mongoUseUrl.value && form.value.connection_string) || (form.value.db_type === "jdbc" && form.value.connection_string) || connectionUrlInput.value.trim());
 });
@@ -1192,8 +1373,8 @@ async function testConnection() {
   const runId = ++testRunId;
   isTesting.value = true;
   testResult.value = null;
+  const config = connectionConfigForSubmit(editingId.value || uuid());
   try {
-    const config = connectionConfigForSubmit(editingId.value || uuid());
     const msg = await api.testConnection(config);
     if (runId !== testRunId) return;
     if (config.db_type === "mongodb" && /legacy driver/i.test(msg)) {
@@ -1202,7 +1383,10 @@ async function testConnection() {
     testResult.value = { ok: true, message: msg };
   } catch (e: any) {
     if (runId !== testRunId) return;
-    testResult.value = { ok: false, message: mongodbAuthFailureHint(String(e)) };
+    const message = mongodbAuthFailureHint(String(e));
+    const fallbackMessage = await tryNacosDockerConsoleFallback(config, message);
+    if (runId !== testRunId) return;
+    testResult.value = fallbackMessage ? { ok: true, message: fallbackMessage } : { ok: false, message };
   } finally {
     if (runId === testRunId) {
       isTesting.value = false;
@@ -1256,7 +1440,7 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
   });
   validateTransportLayers(config);
   const connectTimeout = Number(config.connect_timeout_secs);
-  config.connect_timeout_secs = Number.isFinite(connectTimeout) && connectTimeout > 0 ? connectTimeout : 5;
+  config.connect_timeout_secs = Number.isFinite(connectTimeout) && connectTimeout > 0 ? connectTimeout : 10;
   const queryTimeout = Number(config.query_timeout_secs);
   config.query_timeout_secs = Number.isFinite(queryTimeout) && queryTimeout >= 0 ? queryTimeout : 30;
   const idleTimeout = Number(config.idle_timeout_secs);
@@ -1282,6 +1466,15 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
     config.username = "";
     config.password = "";
     config.database = undefined;
+    config.connection_string = undefined;
+    config.url_params = "";
+  } else if (config.db_type === "nacos") {
+    const nacosConfig = buildNacosAdminConfig();
+    config.external_config = nacosConfig;
+    applyNacosServerAddr(config, nacosConfig.serverAddr);
+    config.username = nacosAuthKind.value === "usernamePassword" ? nacosUsername.value.trim() : "";
+    config.password = nacosAuthKind.value === "usernamePassword" ? nacosPassword.value : "";
+    config.database = nacosConfig.namespace || undefined;
     config.connection_string = undefined;
     config.url_params = "";
   } else {
@@ -1346,6 +1539,17 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
   if (config.db_type === "redis") {
     config.redis_key_separator = config.redis_key_separator?.trim() ?? ":";
   }
+  if (config.db_type === "zookeeper") {
+    const normalizedConnectString = normalizeZooKeeperConnectString(config.connection_string || "");
+    config.connection_string = normalizedConnectString || undefined;
+    const firstEndpoint = firstZooKeeperEndpoint(normalizedConnectString || (config.host ? `${config.host}:${config.port || 2181}` : ""));
+    if (firstEndpoint) {
+      config.host = firstEndpoint.host;
+      config.port = firstEndpoint.port;
+    }
+    config.database = undefined;
+    config.ssl = false;
+  }
   if (config.db_type === "etcd") {
     config.etcd_endpoints = normalizeEndpointLines(config.etcd_endpoints || "");
     const firstEndpoint = firstEtcdEndpoint(config.etcd_endpoints);
@@ -1369,10 +1573,16 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
   } else {
     config.ca_cert_path = config.ca_cert_path?.trim() || "";
   }
-  if (config.db_type === "jdbc") {
-    config.host = "";
-    config.port = 0;
-    config.connection_string = config.connection_string?.trim() || "";
+  if (jdbcBackedDatabaseTypes.has(config.db_type)) {
+    if (config.db_type === "jdbc") {
+      config.host = "";
+      config.port = 0;
+      config.connection_string = config.connection_string?.trim() || "";
+    } else if (config.db_type === "prestosql") {
+      config.connection_string = undefined;
+      config.jdbc_driver_class = config.jdbc_driver_class?.trim() || "io.prestosql.jdbc.PrestoDriver";
+      applyPrestoSqlBuiltinDriverPathsIfAvailable();
+    }
     config.jdbc_driver_class = config.jdbc_driver_class?.trim() || undefined;
     config.jdbc_driver_paths = jdbcDriverPathsInput.value
       .split(/\r?\n/)
@@ -1417,6 +1627,7 @@ function connectionConfigForSubmit(id: string): ConnectionConfig {
   delete legacy.proxy_username;
   delete legacy.proxy_password;
   config.visible_databases = Array.isArray(config.visible_databases) && config.visible_databases.length > 0 ? config.visible_databases : undefined;
+  if (config.visible_schemas && Object.keys(config.visible_schemas).length === 0) config.visible_schemas = undefined;
   return config as ConnectionConfig;
 }
 
@@ -1739,6 +1950,57 @@ function saveVisibleDatabaseSelection() {
   showVisibleDatabasesDialog.value = false;
 }
 
+function resetVisibleSchemasState() {
+  showVisibleSchemasDialog.value = false;
+  isLoadingVisibleSchemas.value = false;
+  visibleSchemaNames.value = [];
+  visibleSchemaInitialSelection.value = [];
+  visibleSchemaError.value = "";
+}
+
+async function openVisibleSchemasPicker() {
+  if (!ensureConnectionHostResolvedFromUrl()) return;
+  if (!canChooseVisibleSchemas.value || isLoadingVisibleSchemas.value) return;
+  isLoadingVisibleSchemas.value = true;
+  visibleSchemaError.value = "";
+  const draftId = buildDraftVisibleSchemasConnectionId(uuid());
+  try {
+    const draftConfig: ConnectionConfig = {
+      ...connectionConfigForSubmit(draftId),
+      id: draftId,
+    };
+    await store.addEphemeralConnection(draftConfig);
+    await store.ensureConnected(draftId);
+    const names = await api.listSchemas(draftId, visibleSchemasDatabaseKey.value);
+    visibleSchemaNames.value = names;
+    const key = visibleSchemasDatabaseKey.value;
+    const configured = form.value.visible_schemas?.[key];
+    visibleSchemaInitialSelection.value = Array.isArray(configured) ? configured : [];
+    showVisibleSchemasDialog.value = true;
+  } catch (e: any) {
+    visibleSchemaNames.value = [];
+    visibleSchemaInitialSelection.value = [];
+    visibleSchemaError.value = String(e?.message || e);
+  } finally {
+    isLoadingVisibleSchemas.value = false;
+    store.removeConnection(draftId).catch(() => {});
+  }
+}
+
+function handleDraftSchemasSave(selectedNames: string[]) {
+  const key = visibleSchemasDatabaseKey.value;
+  form.value.visible_schemas = { ...(form.value.visible_schemas || {}), [key]: selectedNames };
+}
+
+function handleDraftSchemasShowAll() {
+  const key = visibleSchemasDatabaseKey.value;
+  if (form.value.visible_schemas) {
+    const next = { ...form.value.visible_schemas };
+    delete next[key];
+    form.value.visible_schemas = Object.keys(next).length > 0 ? next : undefined;
+  }
+}
+
 function applyConnectionUrl() {
   if (applyConnectionUrlToForm(connectionUrlInput.value)) {
     toast(t("connection.parseConnectionUrlApplied"), 2000);
@@ -1773,6 +2035,7 @@ function resetForm() {
   dbSearchQuery.value = "";
   configTab.value = "connection";
   resetVisibleDatabaseDraftState();
+  resetVisibleSchemasState();
   resetTestState();
 }
 
@@ -1982,9 +2245,9 @@ function validateTransportLayers(config: LegacyConnectionConfig) {
     }
     if (layer.type === "ssh") {
       if (!layer.user?.trim()) throw new Error(t("connection.sshHopInvalidUser", { hop: label }));
-      if (!layer.password?.trim() && !layer.key_path?.trim() && !layer.use_ssh_agent) {
-        throw new Error(t("connection.sshHopInvalidAuth", { hop: label }));
-      }
+      // Auth credentials are optional: the backend probes "none" authentication
+      // first, so hops that require no credential (e.g. passwordless SSH proxies)
+      // are valid with password, key, and agent all left empty.
       const timeout = Number(layer.connect_timeout_secs);
       if (!Number.isFinite(timeout) || timeout < 1 || timeout > 300) {
         throw new Error(t("connection.sshHopInvalidTimeout", { hop: label }));
@@ -2136,18 +2399,11 @@ async function browseEtcdTlsFile(target: "ca" | "cert" | "key") {
 async function browseDbFilePath() {
   if (isTauriRuntime()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const filters =
-      form.value.db_type === "duckdb"
-        ? [{ name: "DuckDB", extensions: ["duckdb", "db"] }]
-        : form.value.db_type === "access"
-          ? [{ name: "Microsoft Access", extensions: ["accdb", "mdb"] }]
-          : form.value.db_type === "h2"
-            ? [{ name: "H2", extensions: ["db"] }]
-            : [{ name: "SQLite", extensions: ["db", "db3", "sqlite", "sqlite3"] }];
+    const filters = form.value.db_type === "duckdb" ? [{ name: "DuckDB", extensions: ["duckdb", "db"] }] : form.value.db_type === "access" ? [{ name: "Microsoft Access", extensions: ["accdb", "mdb"] }] : form.value.db_type === "h2" ? [{ name: "H2", extensions: ["db"] }] : undefined;
     const selected = await open({
       title: "Select Database File",
       multiple: false,
-      filters,
+      ...(filters ? { filters } : {}),
     });
     if (selected && typeof selected === "string") {
       form.value.host = selected;
@@ -2196,7 +2452,8 @@ async function createDuckDbFilePath() {
 }
 
 function ensureSqliteFileExtension(path: string): string {
-  return /\.(db|db3|sqlite|sqlite3)$/i.test(path) ? path : `${path}.db`;
+  const extensionPattern = new RegExp(`\\.(${SQLITE_DATABASE_FILE_EXTENSIONS.join("|")})$`, "i");
+  return extensionPattern.test(path) ? path : `${path}.db`;
 }
 
 async function createSqliteFilePath() {
@@ -2205,7 +2462,7 @@ async function createSqliteFilePath() {
   const selected = await save({
     title: t("connection.createSqliteFile"),
     defaultPath: "database.db",
-    filters: [{ name: "SQLite", extensions: ["db", "db3", "sqlite", "sqlite3"] }],
+    filters: [{ name: "SQLite", extensions: SQLITE_DATABASE_FILE_EXTENSIONS }],
   });
   if (!selected) return;
 
@@ -2238,6 +2495,7 @@ async function loadJdbcDrivers() {
     const [drivers, bundles] = await Promise.all([api.listJdbcDrivers(), api.listJdbcMavenBundles()]);
     jdbcDrivers.value = drivers;
     jdbcMavenBundles.value = bundles;
+    applyPrestoSqlBuiltinDriverPathsIfAvailable();
   } catch {
     jdbcDrivers.value = [];
     jdbcMavenBundles.value = [];
@@ -2267,6 +2525,15 @@ function addJdbcDriverPaths(paths: string[]) {
     .map((value) => value.trim())
     .filter(Boolean);
   jdbcDriverPathsInput.value = Array.from(new Set([...existing, ...paths])).join("\n");
+}
+
+function applyPrestoSqlBuiltinDriverPathsIfAvailable() {
+  if (form.value.db_type !== "prestosql" || jdbcManualClasspathCount.value > 0) return;
+  const paths = prestoSqlBuiltinDriverPaths(jdbcMavenBundles.value);
+  if (paths.length === 0) return;
+  addJdbcDriverPaths(paths);
+  selectedJdbcDriverPath.value = jdbcDriverSelectItems.value.find((item) => paths.every((path) => item.paths.includes(path)))?.id ?? "";
+  jdbcManualClasspathOpen.value = false;
 }
 
 function onJdbcDriverSelect(id: any) {
@@ -2497,7 +2764,7 @@ function openExternalUrl(url: string) {
                 </div>
 
                 <!-- JDBC: optional external plugin -->
-                <template v-if="form.db_type === 'jdbc'">
+                <template v-if="isJdbcConnection">
                   <div class="grid grid-cols-4 items-center gap-4">
                     <Label class="text-right">{{ t("connection.jdbcUrl") }}</Label>
                     <Input v-model="form.connection_string" class="col-span-3" :placeholder="t('connection.jdbcUrlPlaceholder')" />
@@ -2560,6 +2827,10 @@ function openExternalUrl(url: string) {
                         {{ t("connection.jdbcPluginHint") }}
                       </p>
                       <div class="flex flex-wrap gap-2">
+                        <Button type="button" variant="outline" size="sm" @click="emit('openDriverStore')">
+                          <FolderOpen class="h-3.5 w-3.5" />
+                          {{ t("toolbar.driverManager") }}
+                        </Button>
                         <Button type="button" variant="outline" size="sm" @click="openExternalUrl('https://dbxio.com')">
                           <ExternalLink class="h-3.5 w-3.5" />
                           {{ t("connection.jdbcDocs") }}
@@ -2760,6 +3031,54 @@ function openExternalUrl(url: string) {
                   </div>
                 </template>
 
+                <!-- Nacos: server address, namespace and auth -->
+                <template v-else-if="form.db_type === 'nacos'">
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.nacosConsoleUrl") }}</Label>
+                    <Input v-model="nacosServerAddr" class="col-span-3" placeholder="http://127.0.0.1:8085" />
+                  </div>
+                  <div class="grid grid-cols-4 items-start gap-4">
+                    <span />
+                    <p class="col-span-3 m-0 text-xs leading-5 text-muted-foreground">{{ t("connection.nacosConsoleUrlHint") }}</p>
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.nacosNamespace") }}</Label>
+                    <Input v-model="nacosNamespace" class="col-span-3" placeholder="public" />
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.nacosContextPath") }}</Label>
+                    <Input v-model="nacosContextPath" class="col-span-3" :placeholder="t('connection.nacosContextPathPlaceholder')" />
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.nacosAuth") }}</Label>
+                    <div class="col-span-3 flex flex-wrap gap-2">
+                      <Button size="sm" :variant="nacosAuthKind === 'none' ? 'default' : 'outline'" @click="nacosAuthKind = 'none'">{{ t("connection.nacosAuthNone") }}</Button>
+                      <Button size="sm" :variant="nacosAuthKind === 'usernamePassword' ? 'default' : 'outline'" @click="nacosAuthKind = 'usernamePassword'">{{ t("connection.nacosAuthUserPassword") }}</Button>
+                    </div>
+                  </div>
+                  <template v-if="nacosAuthKind === 'usernamePassword'">
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label class="text-right">{{ t("connection.user") }}</Label>
+                      <Input v-model="nacosUsername" class="col-span-3" placeholder="nacos" />
+                    </div>
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label class="text-right">{{ t("connection.password") }}</Label>
+                      <PasswordInput v-model="nacosPassword" class="col-span-3" />
+                    </div>
+                  </template>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right text-xs">{{ t("connection.nacosTls") }}</Label>
+                    <label class="col-span-3 inline-flex items-center gap-2">
+                      <input type="checkbox" v-model="nacosTlsSkipVerify" class="mr-0" />
+                      <span class="text-xs text-muted-foreground">{{ t("connection.nacosTlsSkipVerify") }}</span>
+                    </label>
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.nacosPageSize") }}</Label>
+                    <Input v-model.number="nacosPageSize" type="number" min="1" max="500" class="col-span-3" />
+                  </div>
+                </template>
+
                 <!-- Redis: host, port, user, password, ssl -->
                 <template v-else-if="form.db_type === 'redis'">
                   <div class="grid grid-cols-4 items-center gap-4">
@@ -2854,6 +3173,37 @@ function openExternalUrl(url: string) {
                       />
                       <p class="text-xs text-muted-foreground">
                         {{ t("connection.etcdEndpointsHint") }}
+                      </p>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.user") }}</Label>
+                    <Input v-model="form.username" class="col-span-3" />
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.password") }}</Label>
+                    <PasswordInput v-model="form.password" class="col-span-3" />
+                  </div>
+                </template>
+
+                <!-- ZooKeeper: host, connect string, user, password -->
+                <template v-else-if="form.db_type === 'zookeeper'">
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label class="text-right">{{ t("connection.host") }}</Label>
+                    <Input v-model="form.host" class="col-span-2" placeholder="127.0.0.1" />
+                    <Input v-model.number="form.port" type="number" class="col-span-1" />
+                  </div>
+                  <div class="grid grid-cols-4 items-start gap-4">
+                    <Label class="text-right mt-2">{{ t("connection.zookeeperConnectString") }}</Label>
+                    <div class="col-span-3 space-y-1">
+                      <textarea
+                        v-model="zookeeperConnectString"
+                        class="flex min-h-[76px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        placeholder="127.0.0.1:2181&#10;zk-2:2181"
+                        spellcheck="false"
+                      />
+                      <p class="text-xs text-muted-foreground">
+                        {{ t("connection.zookeeperConnectStringHint") }}
                       </p>
                     </div>
                   </div>
@@ -3071,6 +3421,70 @@ function openExternalUrl(url: string) {
                       "
                     />
                   </div>
+
+                  <template v-if="isPrestoSqlConnection">
+                    <div class="grid grid-cols-4 items-start gap-4">
+                      <Label class="text-right mt-2">{{ t("connection.jdbcDriverPaths") }}</Label>
+                      <div class="col-span-3 space-y-2">
+                        <Select v-if="jdbcDriverSelectItems.length > 0" :model-value="selectedJdbcDriverPath" @update:model-value="onJdbcDriverSelect">
+                          <SelectTrigger>
+                            <SelectValue :placeholder="t('connection.jdbcDriverSelectPlaceholder')" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem v-for="driver in jdbcDriverSelectItems" :key="driver.id" :value="driver.id">
+                              {{ driver.label }}
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <div class="flex items-center justify-between gap-3 rounded-md border bg-muted/20 px-3 py-2">
+                          <div class="flex min-w-0 items-center gap-2">
+                            <div class="truncate text-xs font-medium">{{ t("connection.jdbcManualClasspath") }}</div>
+                            <Badge variant="outline" class="h-5 shrink-0 rounded-full px-2 text-[10px] font-medium">
+                              {{ t("connection.jdbcManualClasspathCount", { count: jdbcManualClasspathCount }) }}
+                            </Badge>
+                          </div>
+                          <Switch v-model="jdbcManualClasspathOpen" />
+                        </div>
+                        <div v-if="jdbcManualClasspathOpen" class="flex items-start gap-1">
+                          <textarea
+                            v-model="jdbcDriverPathsInput"
+                            class="flex min-h-12 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            :placeholder="t('connection.jdbcDriverPathsPlaceholder')"
+                          />
+                          <Tooltip v-if="isDesktop">
+                            <TooltipTrigger as-child>
+                              <Button type="button" variant="outline" size="icon" class="h-9 w-9 shrink-0" @click="browseJdbcDriverPaths">
+                                <FolderOpen class="h-4 w-4" />
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>{{ t("connection.jdbcDriverBrowse") }}</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="grid grid-cols-4 items-center gap-4">
+                      <Label class="text-right">{{ t("connection.jdbcDriverClass") }}</Label>
+                      <Input v-model="form.jdbc_driver_class" class="col-span-3" :placeholder="t('connection.jdbcDriverClassPlaceholder')" />
+                    </div>
+                    <div class="grid grid-cols-4 items-start gap-4">
+                      <span />
+                      <div class="col-span-3 space-y-2">
+                        <p class="text-xs text-muted-foreground">
+                          {{ t("connection.jdbcPluginHint") }}
+                        </p>
+                        <div class="flex flex-wrap gap-2">
+                          <Button type="button" variant="outline" size="sm" @click="emit('openDriverStore')">
+                            <FolderOpen class="h-3.5 w-3.5" />
+                            {{ t("toolbar.driverManager") }}
+                          </Button>
+                          <Button type="button" variant="outline" size="sm" @click="openExternalUrl('https://dbxio.com')">
+                            <ExternalLink class="h-3.5 w-3.5" />
+                            {{ t("connection.jdbcDocs") }}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
                 </template>
               </div>
             </TabsContent>
@@ -3555,6 +3969,11 @@ function openExternalUrl(url: string) {
             <ListFilter v-else class="mr-1.5 h-4 w-4" />
             {{ hasVisibleDatabaseFilter ? visibleDatabaseSummary : t("contextMenu.selectVisibleDatabases") }}
           </Button>
+          <Button v-if="canChooseVisibleSchemas" variant="outline" class="shrink-0" :disabled="isTesting || isSaving || isLoadingVisibleSchemas || !hasRequiredConnectionTarget" @click="openVisibleSchemasPicker">
+            <Loader2 v-if="isLoadingVisibleSchemas" class="mr-1.5 h-4 w-4 animate-spin" />
+            <ListFilter v-else class="mr-1.5 h-4 w-4" />
+            {{ hasVisibleSchemaFilter ? visibleSchemaSummary : t("visibleSchemas.showAll") }}
+          </Button>
           <Button variant="outline" class="shrink-0" :disabled="isTesting || isSaving" @click="testConnection">
             {{ isTesting ? t("connection.testing") : t("connection.test") }}
           </Button>
@@ -3644,4 +4063,18 @@ function openExternalUrl(url: string) {
       </DialogFooter>
     </DialogContent>
   </Dialog>
+
+  <VisibleSchemasDialog
+    v-model:open="showVisibleSchemasDialog"
+    draft-mode
+    :connection-id="''"
+    :connection-name="form.name || selectedProfile().label"
+    :database="visibleSchemasDatabaseKey"
+    :draft-schema-names="visibleSchemaNames"
+    :draft-initial-selection="visibleSchemaInitialSelection"
+    :draft-loading="isLoadingVisibleSchemas"
+    :draft-error="visibleSchemaError"
+    @draft:save="handleDraftSchemasSave"
+    @draft:show-all="handleDraftSchemasShowAll"
+  />
 </template>

@@ -694,7 +694,7 @@ fn should_discard_agent_pool_after_error(err: &str) -> bool {
 pub fn pool_error_action(db_type: Option<DatabaseType>, err: &str) -> PoolErrorAction {
     let lower = err.to_lowercase();
     if db::sqlserver::is_driver_panic_error(err)
-        || (db_type == Some(DatabaseType::SqlServer) && is_dbx_query_timeout_error(&lower))
+        || (is_dbx_query_timeout_error(&lower) && should_discard_pool_after_query_timeout(db_type))
         || (db_type.is_some_and(|db_type| database_capabilities::is_agent_type(&db_type))
             && should_discard_agent_pool_after_error(err)
             && !is_connection_error(err))
@@ -707,6 +707,35 @@ pub fn pool_error_action(db_type: Option<DatabaseType>, err: &str) -> PoolErrorA
     } else {
         PoolErrorAction::Keep
     }
+}
+
+fn should_discard_pool_after_query_timeout(db_type: Option<DatabaseType>) -> bool {
+    let Some(db_type) = db_type else {
+        return false;
+    };
+    database_capabilities::is_agent_type(&db_type)
+        || matches!(
+            db_type,
+            DatabaseType::Mysql
+                | DatabaseType::Postgres
+                | DatabaseType::Redshift
+                | DatabaseType::Gaussdb
+                | DatabaseType::Kwdb
+                | DatabaseType::OpenGauss
+                | DatabaseType::Questdb
+                | DatabaseType::Doris
+                | DatabaseType::StarRocks
+                | DatabaseType::ManticoreSearch
+                | DatabaseType::ClickHouse
+                | DatabaseType::SqlServer
+                | DatabaseType::Rqlite
+                | DatabaseType::Turso
+                | DatabaseType::Elasticsearch
+                | DatabaseType::Qdrant
+                | DatabaseType::Milvus
+                | DatabaseType::Weaviate
+                | DatabaseType::InfluxDb
+        )
 }
 
 pub fn should_discard_pool_after_error(db_type: Option<DatabaseType>, err: &str) -> bool {
@@ -805,6 +834,12 @@ pub async fn do_execute(
     cancel_token: Option<CancellationToken>,
     options: QueryExecutionOptions,
 ) -> Result<db::QueryResult, String> {
+    if let Some(execution_id) = options.execution_id.as_deref() {
+        state.running_queries.set_pool_key(execution_id, pool_key.to_string());
+    }
+    state.touch_pool_activity(pool_key).await;
+    let _activity_touch = state.pool_activity_touch(pool_key);
+
     let query_timeout = resolve_query_timeout(options.timeout_secs);
     let (_duckdb_attached_names, conn_name_if_readonly) = {
         let configs = state.configs.read().await;
@@ -822,7 +857,7 @@ pub async fn do_execute(
     let connections = state.connections.read().await;
     let pool = connections.get(pool_key).ok_or("Connection not found")?;
 
-    match pool {
+    let result = match pool {
         #[cfg(feature = "duckdb-bundled")]
         PoolKind::DuckDb(con) => {
             let con = con.clone();
@@ -853,10 +888,23 @@ pub async fn do_execute(
             let bare = *mode == crate::connection::MysqlMode::Bare;
             let max_rows = options.max_rows;
             drop(connections);
+            let mut conn = db::mysql::get_conn_with_health_check(&p).await?;
+            let connection_id = conn.id();
+            if let Some(ref execution_id) = options.execution_id {
+                let kill_opts = conn.opts().clone();
+                state.running_queries.register_interrupt(execution_id, move || {
+                    let kill_opts = kill_opts.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = db::mysql::kill_query_with_opts(kill_opts, connection_id).await {
+                            log::warn!("Failed to cancel MySQL query {connection_id}: {error}");
+                        }
+                    });
+                });
+            }
             wait_for_query_opt(
                 cancel_token,
                 query_timeout,
-                db::mysql::execute_query_with_max_rows(&p, sql, bare, max_rows, mysql_dialect),
+                db::mysql::execute_query_on_conn_with_max_rows(&mut conn, sql, bare, max_rows, mysql_dialect),
             )
             .await
         }
@@ -864,21 +912,21 @@ pub async fn do_execute(
             let p = p.clone();
             let schema = schema.map(|s| s.to_string());
             let max_rows = options.max_rows;
+            let query_timeout = query_timeout;
             drop(connections);
             if let Some(schema) = schema {
-                wait_for_query_opt(
+                db::postgres::execute_query_with_schema_and_max_rows_and_cancel(
+                    &p,
+                    &schema,
+                    sql,
+                    max_rows,
                     cancel_token,
                     query_timeout,
-                    db::postgres::execute_query_with_schema_and_max_rows(&p, &schema, sql, max_rows),
                 )
                 .await
             } else {
-                wait_for_query_opt(
-                    cancel_token,
-                    query_timeout,
-                    db::postgres::execute_query_with_max_rows(&p, sql, max_rows),
-                )
-                .await
+                db::postgres::execute_query_with_max_rows_and_cancel(&p, sql, max_rows, cancel_token, query_timeout)
+                    .await
             }
         }
         PoolKind::Sqlite(p) => {
@@ -986,6 +1034,7 @@ pub async fn do_execute(
         PoolKind::Redis(_) => Err("Use Redis-specific commands".to_string()),
         PoolKind::MongoDb(_) => Err("Use MongoDB-specific commands".to_string()),
         PoolKind::MessageQueue => Err("Use Message Queue-specific commands".to_string()),
+        PoolKind::Nacos => Err("Use Nacos-specific commands".to_string()),
         PoolKind::InfluxDb(client) => {
             let client = client.clone();
             let database = pool_key.split(':').nth(1).unwrap_or("default").to_string();
@@ -1011,21 +1060,39 @@ pub async fn do_execute(
             let max_rows = options.max_rows;
             let rpc_timeout = query_timeout;
             drop(connections);
-            let result = wait_for_query_opt(cancel_token, query_timeout, async move {
-                let mut client = client.lock().await;
+            if is_canceled(&cancel_token) {
+                return Err(canceled_error());
+            }
+            let cancel_for_agent = cancel_token.clone();
+            let result = async move {
+                let mut client = match cancel_for_agent.as_ref() {
+                    Some(token) => {
+                        tokio::select! {
+                            biased;
+                            _ = token.cancelled() => return Err(canceled_error()),
+                            guard = client.lock() => guard,
+                        }
+                    }
+                    None => client.lock().await,
+                };
                 if let Some(session_id) = options.result_session_id.as_deref() {
                     let params = agent_fetch_query_page_params(session_id, options.page_size.unwrap_or(MAX_ROWS));
-                    client.fetch_query_page_with_timeout(params, rpc_timeout).await
+                    client.fetch_query_page_with_timeout_and_cancel(params, rpc_timeout, cancel_for_agent.clone()).await
                 } else if options.page_size.is_some() {
                     let params = agent_execute_query_page_params(&sql, database.as_deref(), schema.as_deref(), options);
-                    client.execute_query_page_with_timeout(params, rpc_timeout).await
+                    client
+                        .execute_query_page_with_timeout_and_cancel(params, rpc_timeout, cancel_for_agent.clone())
+                        .await
                 } else {
                     let params = agent_execute_query_params(&sql, database.as_deref(), schema.as_deref(), options);
-                    client.execute_query_with_timeout(params, rpc_timeout).await
+                    client.execute_query_with_timeout_and_cancel(params, rpc_timeout, cancel_for_agent.clone()).await
                 }
-            })
+            }
             .await
-            .map(|result| normalize_query_result_for_js(truncate_result_with_max_rows(result, max_rows)));
+            .map(|result| truncate_result_with_max_rows(result, max_rows));
+            if matches!(result.as_ref(), Err(err) if err == QUERY_CANCELED) {
+                state.remove_pool_by_key(pool_key).await;
+            }
             if matches!(result.as_ref(), Err(err) if should_discard_pool_after_error(pool_db_type, err)) {
                 state.remove_pool_by_key(pool_key).await;
             }
@@ -1085,9 +1152,10 @@ pub async fn do_execute(
                 }
             })
             .await
-            .map(|result| normalize_query_result_for_js(truncate_result_with_max_rows(result, max_rows)))
+            .map(|result| truncate_result_with_max_rows(result, max_rows))
         }
-    }
+    };
+    result.map(normalize_query_result_for_js)
 }
 
 fn external_driver_query_params(
@@ -1199,14 +1267,17 @@ pub async fn execute_sql_statement_with_options(
         do_execute(state, &pool_key, mysql_dialect, Some(database), sql, schema, cancel_token.clone(), options.clone())
             .await;
 
-    match &result {
-        Err(e)
-            if pool_error_action(db_type, e) == PoolErrorAction::ReconnectAndRetry && !is_canceled(&cancel_token) =>
-        {
+    let action = result.as_ref().err().map(|e| pool_error_action(db_type, e));
+    match action {
+        Some(PoolErrorAction::ReconnectAndRetry) if !is_canceled(&cancel_token) => {
             let db_opt = if database.is_empty() { None } else { Some(database) };
             let new_key =
                 state.reconnect_pool_for_session(connection_id, db_opt, options.client_session_id.as_deref()).await?;
             do_execute(state, &new_key, mysql_dialect, Some(database), sql, schema, cancel_token, options).await
+        }
+        Some(PoolErrorAction::Discard) => {
+            state.remove_pool_by_key(&pool_key).await;
+            result
         }
         _ => result,
     }
@@ -1226,6 +1297,11 @@ async fn execute_postgres_drop_database(
     let pool_key = state
         .get_or_create_pool_for_session(connection_id, Some(admin_database), options.client_session_id.as_deref())
         .await?;
+    if let Some(execution_id) = options.execution_id.as_deref() {
+        state.running_queries.set_pool_key(execution_id, pool_key.clone());
+    }
+    state.touch_pool_activity(&pool_key).await;
+    let _activity_touch = state.pool_activity_touch(pool_key.as_str());
 
     if is_canceled(&cancel_token) {
         return Err(canceled_error());
@@ -1359,6 +1435,11 @@ pub async fn execute_multi_core_with_options(
             .get_or_create_pool_for_session(connection_id, Some(database), options.client_session_id.as_deref())
             .await?
     };
+    if let Some(execution_id) = options.execution_id.as_deref() {
+        state.running_queries.set_pool_key(execution_id, pool_key.clone());
+    }
+    state.touch_pool_activity(&pool_key).await;
+    let _activity_touch = state.pool_activity_touch(pool_key.as_str());
 
     let is_sqlserver = {
         let connections = state.connections.read().await;
@@ -1418,7 +1499,18 @@ pub async fn execute_multi_core_with_options(
         // Read-only check for MySQL batch path
         check_read_only_for_connection_multi(state, &pool_key, &statements).await?;
         let mysql_dialect = connection_mysql_query_dialect(state, connection_id).await;
-        return execute_multi_mysql(&pool, mode, mysql_dialect, &statements, cancel_token, options).await;
+        return execute_multi_mysql(
+            state,
+            &pool_key,
+            db_type,
+            &pool,
+            mode,
+            mysql_dialect,
+            &statements,
+            cancel_token,
+            options,
+        )
+        .await;
     }
 
     let mut results = Vec::with_capacity(statements.len());
@@ -1449,6 +1541,9 @@ pub async fn execute_multi_core_with_options(
 }
 
 async fn execute_multi_mysql(
+    state: &AppState,
+    pool_key: &str,
+    db_type: Option<DatabaseType>,
     pool: &db::mysql::MySqlPool,
     mode: crate::connection::MysqlMode,
     dialect: db::mysql::MySqlQueryDialect,
@@ -1461,7 +1556,13 @@ async fn execute_multi_mysql(
     let max_rows = options.max_rows;
     let mut conn = match db::mysql::get_conn_with_health_check(pool).await {
         Ok(conn) => conn,
-        Err(err) => return Ok(vec![error_query_result(err)]),
+        Err(err) => {
+            if matches!(pool_error_action(db_type, &err), PoolErrorAction::Discard | PoolErrorAction::ReconnectAndRetry)
+            {
+                state.remove_pool_by_key(pool_key).await;
+            }
+            return Ok(vec![error_query_result(err)]);
+        }
     };
     let mut results = Vec::with_capacity(statements.len());
 
@@ -1479,7 +1580,14 @@ async fn execute_multi_mysql(
         .await
         {
             Ok(result) => results.push(result),
-            Err(err) => results.push(error_query_result(err)),
+            Err(err) => {
+                let action = pool_error_action(db_type, &err);
+                results.push(error_query_result(err));
+                if matches!(action, PoolErrorAction::Discard | PoolErrorAction::ReconnectAndRetry) {
+                    state.remove_pool_by_key(pool_key).await;
+                    break;
+                }
+            }
         }
     }
 
@@ -1696,6 +1804,7 @@ pub async fn execute_statements_in_transaction(
     check_read_only_for_connection_multi(state, &pool_key, statements).await?;
 
     let start = std::time::Instant::now();
+    let db_type = connection_database_type(state, connection_id).await;
 
     // Clone the pool handle within the lock, then drop it before any async work.
     let path = {
@@ -1709,7 +1818,7 @@ pub async fn execute_statements_in_transaction(
             | PoolKind::Turso(_)
             | PoolKind::SqlServer(_)
             | PoolKind::Agent(_) => TxPath::Explicit,
-            PoolKind::MessageQueue => TxPath::None,
+            PoolKind::MessageQueue | PoolKind::Nacos => TxPath::None,
             #[cfg(feature = "duckdb-bundled")]
             PoolKind::DuckDb(_)
             | PoolKind::Redis(_)
@@ -1731,7 +1840,7 @@ pub async fn execute_statements_in_transaction(
         })
     };
 
-    match path {
+    let result = match path {
         Some(TxPath::Pg(pool)) => exec_tx_pg_inner(pool, statements, schema, start).await,
         Some(TxPath::Mysql(pool, _bare)) => exec_tx_mysql_inner(pool, statements, start).await,
         Some(TxPath::Sqlite(pool)) => exec_tx_sqlite_inner(pool, statements, start).await,
@@ -1744,7 +1853,15 @@ pub async fn execute_statements_in_transaction(
             exec_tx_none_inner(state, &pool_key, mysql_dialect, Some(database), statements, schema, start).await
         }
         None => Err("Connection not found for transaction".to_string()),
+    };
+
+    if let Err(err) = result.as_ref() {
+        if matches!(pool_error_action(db_type, err), PoolErrorAction::Discard | PoolErrorAction::ReconnectAndRetry) {
+            state.remove_pool_by_key(&pool_key).await;
+        }
     }
+
+    result
 }
 
 /// Owned pool variants for safe dispatch across async boundaries.
@@ -2152,7 +2269,12 @@ mod tests {
         let err = "Query timed out after 30 seconds";
 
         assert_eq!(pool_error_action(Some(DatabaseType::SqlServer), err), PoolErrorAction::Discard);
-        assert_eq!(pool_error_action(Some(DatabaseType::Mysql), err), PoolErrorAction::Keep);
+        assert_eq!(pool_error_action(Some(DatabaseType::Mysql), err), PoolErrorAction::Discard);
+        assert_eq!(pool_error_action(Some(DatabaseType::Postgres), err), PoolErrorAction::Discard);
+        assert_eq!(pool_error_action(Some(DatabaseType::ClickHouse), err), PoolErrorAction::Discard);
+        assert_eq!(pool_error_action(Some(DatabaseType::Oracle), err), PoolErrorAction::Discard);
+        assert_eq!(pool_error_action(Some(DatabaseType::Sqlite), err), PoolErrorAction::Keep);
+        assert_eq!(pool_error_action(Some(DatabaseType::DuckDb), err), PoolErrorAction::Keep);
     }
 
     #[test]
@@ -2322,6 +2444,7 @@ mod tests {
             password: String::new(),
             database: None,
             visible_databases: None,
+            visible_schemas: None,
             attached_databases: Vec::new(),
             color: None,
             transport_layers: Vec::new(),

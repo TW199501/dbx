@@ -153,6 +153,7 @@ async fn main() {
         .route("/connection/connect", post(routes::connection::connect_db))
         .route("/connection/final-proxy-port", post(routes::connection::connection_final_proxy_port))
         .route("/connection/disconnect", post(routes::connection::disconnect_db))
+        .route("/connection/check-health", post(routes::connection::check_connection_health))
         .route("/connection/close-database", post(routes::connection::close_database_connection))
         .route("/connection/save", post(routes::connection::save_connections))
         .route("/connection/list", get(routes::connection::load_connections))
@@ -163,6 +164,7 @@ async fn main() {
             "/jdbc/drivers/maven",
             get(routes::jdbc::list_jdbc_maven_bundles).post(routes::jdbc::install_jdbc_driver_from_maven),
         )
+        .route("/jdbc/drivers/prestosql", post(routes::jdbc::install_prestosql_jdbc_driver))
         .route("/jdbc/drivers/maven/{bundle_id}", delete(routes::jdbc::delete_jdbc_maven_bundle))
         .route("/jdbc/drivers/{name}", delete(routes::jdbc::delete_jdbc_driver))
         .route("/jdbc/plugin/status", get(routes::jdbc::get_jdbc_plugin_status))
@@ -202,6 +204,7 @@ async fn main() {
         .route("/schema/objects", get(routes::schema::list_objects))
         .route("/schema/object-statistics", get(routes::schema::list_object_statistics))
         .route("/schema/completion-objects", get(routes::schema::list_completion_objects))
+        .route("/schema/completion-assistant", post(routes::schema::completion_assistant_search))
         .route("/schema/object-source", get(routes::schema::get_object_source))
         .route("/schema/columns", get(routes::schema::list_columns))
         .route("/schema/indexes", get(routes::schema::list_indexes))
@@ -324,14 +327,41 @@ async fn main() {
         .route("/redis/execute-command", post(routes::redis::execute_command))
         .route("/redis/pubsub/publish", post(routes::redis::publish_message))
         .route("/redis/pubsub/ws", get(routes::redis_pubsub_ws::ws_handler))
+        // Redis Slowlog
+        .route("/redis/slowlog-get", post(routes::redis::slowlog_get))
+        .route("/redis/cluster-master-nodes", post(routes::redis::cluster_master_nodes))
         // etcd
         .route("/etcd/list-prefix", post(routes::etcd::list_prefix))
         .route("/etcd/get", post(routes::etcd::get))
         .route("/etcd/put", post(routes::etcd::put))
         .route("/etcd/delete", post(routes::etcd::delete))
+        // ZooKeeper
+        .route("/zookeeper/list-prefix", post(routes::zookeeper::list_prefix))
+        .route("/zookeeper/get", post(routes::zookeeper::get))
+        .route("/zookeeper/put", post(routes::zookeeper::put))
+        .route("/zookeeper/delete", post(routes::zookeeper::delete))
+        // Nacos
+        .route("/nacos/test-connection", post(routes::nacos::test_connection))
+        .route("/nacos/namespaces/list", post(routes::nacos::list_namespaces))
+        .route("/nacos/namespaces/create", post(routes::nacos::create_namespace))
+        .route("/nacos/namespaces/update", post(routes::nacos::update_namespace))
+        .route("/nacos/configs/list", post(routes::nacos::list_configs))
+        .route("/nacos/configs/get", post(routes::nacos::get_config))
+        .route("/nacos/configs/publish", post(routes::nacos::publish_config))
+        .route("/nacos/configs/delete", post(routes::nacos::delete_config))
+        .route("/nacos/configs/history/list", post(routes::nacos::list_config_history))
+        .route("/nacos/configs/history/get", post(routes::nacos::get_config_history))
+        .route("/nacos/configs/history/rollback", post(routes::nacos::rollback_config))
+        .route("/nacos/services/list", post(routes::nacos::list_services))
+        .route("/nacos/instances/list", post(routes::nacos::list_instances))
+        .route("/nacos/instances/update", post(routes::nacos::update_instance))
+        .route("/nacos/raw", post(routes::nacos::raw_request))
         // MongoDB
         .route("/mongo/list-databases", post(routes::mongo::list_databases))
         .route("/mongo/list-collections", post(routes::mongo::list_collections))
+        .route("/mongo/create-database", post(routes::mongo::create_database))
+        .route("/mongo/drop-database", post(routes::mongo::drop_database))
+        .route("/mongo/drop-collection", post(routes::mongo::drop_collection))
         .route("/document-store/find-documents", post(routes::mongo::document_find_documents))
         .route("/mongo/find-documents", post(routes::mongo::find_documents))
         .route("/mongo/aggregate-documents", post(routes::mongo::aggregate_documents))
@@ -379,6 +409,17 @@ async fn main() {
         .route("/export/table/progress/{exportId}", get(routes::table_export::table_export_progress))
         .route("/export/table/download/{exportId}", get(routes::table_export::table_export_download))
         .route("/export/table/cancel", post(routes::table_export::cancel_table_export))
+        // Query result export
+        .route("/export/query-result", post(routes::query_result_export::start_query_result_export))
+        .route(
+            "/export/query-result/progress/{exportId}",
+            get(routes::query_result_export::query_result_export_progress),
+        )
+        .route(
+            "/export/query-result/download/{exportId}",
+            get(routes::query_result_export::query_result_export_download),
+        )
+        .route("/export/query-result/cancel", post(routes::query_result_export::cancel_query_result_export))
         // SQL file
         .route("/sql-file/preview", post(routes::sql_file::preview_sql_file))
         .route("/sql-file/execute", post(routes::sql_file::execute_sql_file))

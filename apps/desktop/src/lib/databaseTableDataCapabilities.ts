@@ -131,14 +131,22 @@ const DATABASE_CAPABILITY_OVERRIDES: Partial<Record<DatabaseType, Partial<Databa
       transaction: false,
     },
   },
-  clickhouse: {
+  prestosql: {
     tableData: {
-      insert: false,
+      insert: true,
       updateRequiresPrimaryKey: true,
       deleteRequiresPrimaryKey: true,
       requiresTransactionalTableForExistingRows: false,
       transaction: false,
-      readonly: true,
+    },
+  },
+  clickhouse: {
+    tableData: {
+      insert: true,
+      updateRequiresPrimaryKey: true,
+      deleteRequiresPrimaryKey: true,
+      requiresTransactionalTableForExistingRows: false,
+      transaction: false,
     },
   },
   tdengine: {

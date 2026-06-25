@@ -19,6 +19,7 @@ import * as api from "@/lib/api";
 import type { AgentDriverInfo, DriverRuntimeInfo, DriverRuntimeSummary, DriverStoreUsage, JavaRuntimeConfig } from "@/lib/api";
 import { formatRuntimeBytes, formatRuntimeCpu, formatRuntimeUptime, runtimeHealthClass, runtimeStatusClass, runtimeStatusDotClass } from "@/lib/driverRuntimePresentation";
 import { addDriverInstallQueue, driverInstallProgressPercent, isDriverInstallProgressTarget, removeDriverInstallQueue, takeNextDriverInstallQueue, type DriverInstallProgress } from "@/lib/driverInstallProgressUi";
+import { PRESTOSQL_DRIVER_DB_TYPE, prestoSqlBuiltinDriverRow, prestoSqlMavenBundle } from "@/lib/prestoSqlBuiltinDriver";
 
 const { t } = useI18n();
 const { toast } = useToast();
@@ -130,6 +131,13 @@ async function applyDriverStoreDir(kind: DriverStoreDirKind, newDir: string | nu
     settingsStore.desktopSettings.driver_store_dir = result.driver_store_dir;
     settingsStore.desktopSettings.plugin_store_dir = result.plugin_store_dir;
     settingsStore.desktopSettings.agent_store_dir = result.agent_store_dir;
+    currentDriverStorePath.value = {
+      driver_store_dir: result.driver_store_dir,
+      plugin_store_dir: result.plugin_store_dir,
+      agent_store_dir: result.agent_store_dir,
+      plugins_dir: result.plugins_dir,
+      agents_dir: result.agents_dir,
+    };
     toast(t("driverStore.driverStoreDirSuccess", { target }));
     // Restart the app to use the new paths
     const { relaunch } = await import("@tauri-apps/plugin-process");
@@ -254,12 +262,22 @@ function progressTitle(fallback: string): string {
   return progressText.value || fallback;
 }
 
+function isPrestoSqlBuiltinDriver(dbType: string): boolean {
+  return dbType === PRESTOSQL_DRIVER_DB_TYPE;
+}
+
+const builtinDriverRows = computed<AgentDriverInfo[]>(() => [...drivers.value, prestoSqlBuiltinDriverRow(jdbcMavenBundles.value)]);
+
+function driverLabel(dbType: string): string {
+  return builtinDriverRows.value.find((d) => d.db_type === dbType)?.label ?? dbType;
+}
+
 function isDriverQueued(dbType: string): boolean {
   return queuedDriverInstalls.value.includes(dbType);
 }
 
 function canInstallOrUpdateDriver(dbType: string): boolean {
-  const driver = drivers.value.find((d) => d.db_type === dbType);
+  const driver = builtinDriverRows.value.find((d) => d.db_type === dbType);
   return Boolean(driver && (!driver.installed || driver.update_available));
 }
 
@@ -346,10 +364,21 @@ async function installDriver(dbType: string) {
 }
 
 async function runDriverInstall(dbType: string) {
-  const label = drivers.value.find((d) => d.db_type === dbType)?.label ?? dbType;
+  const label = driverLabel(dbType);
   installing.value = dbType;
   resetInstallProgress();
   try {
+    if (isPrestoSqlBuiltinDriver(dbType)) {
+      if (!jdbcPluginStatus.value?.installed || !jdbcPluginStatus.value.compatible) {
+        jdbcPluginStatus.value = await api.installJdbcPlugin();
+        emitDriverUpdateCount();
+      }
+      jdbcDrivers.value = await api.installPrestoSqlJdbcDriver();
+      jdbcMavenBundles.value = await api.listJdbcMavenBundles();
+      void loadDriverStoreUsage();
+      toast(t("driverStore.driverInstallSuccess", { label }));
+      return;
+    }
     const blockers = await api.checkAgentUpdateBlockers([dbType]);
     if (blockers.length > 0) {
       toast(t("driverStore.driverUpdateBlocked", { labels: blockers.map((blocker) => blocker.label).join(", ") }));
@@ -408,8 +437,17 @@ async function upgradeAll() {
 }
 
 async function uninstallDriver(dbType: string) {
-  const label = drivers.value.find((d) => d.db_type === dbType)?.label ?? dbType;
+  const label = driverLabel(dbType);
   try {
+    if (isPrestoSqlBuiltinDriver(dbType)) {
+      const bundle = prestoSqlMavenBundle(jdbcMavenBundles.value);
+      if (!bundle) return;
+      jdbcDrivers.value = await api.deleteJdbcMavenBundle(bundle.id);
+      jdbcMavenBundles.value = await api.listJdbcMavenBundles();
+      void loadDriverStoreUsage();
+      toast(t("driverStore.driverUninstallSuccess", { label }));
+      return;
+    }
     await api.uninstallAgent(dbType);
     await refreshAgents();
     toast(t("driverStore.driverUninstallSuccess", { label }));
@@ -488,7 +526,11 @@ async function importOfflineZip() {
 }
 
 async function importDriverJar(dbType: string) {
-  const label = drivers.value.find((d) => d.db_type === dbType)?.label ?? dbType;
+  if (isPrestoSqlBuiltinDriver(dbType)) {
+    await importJdbcDrivers();
+    return;
+  }
+  const label = driverLabel(dbType);
   if (isWeb) {
     const file = await chooseWebFile(".jar");
     if (!file) return;
@@ -593,8 +635,8 @@ type JdbcDriverListItem =
 
 const filteredAgentDrivers = computed(() => {
   const query = agentDriverSearch.value.trim().toLowerCase();
-  if (!query) return drivers.value;
-  return drivers.value.filter((driver) => [driver.label, driver.db_type, driver.version, driver.installed_version, driver.jre].filter(Boolean).join(" ").toLowerCase().includes(query));
+  if (!query) return builtinDriverRows.value;
+  return builtinDriverRows.value.filter((driver) => [driver.label, driver.db_type, driver.version, driver.installed_version, driver.jre].filter(Boolean).join(" ").toLowerCase().includes(query));
 });
 
 const jdbcDriverListItems = computed<JdbcDriverListItem[]>(() => {
@@ -1095,7 +1137,7 @@ watch(driverStoreTab, (tab) => {
                     {{ t("driverStore.install") }}
                   </Button>
                   <Button
-                    v-if="!driver.installed && !isDriverProgressActive(driver.db_type) && !isDriverQueued(driver.db_type)"
+                    v-if="!driver.installed && !isPrestoSqlBuiltinDriver(driver.db_type) && !isDriverProgressActive(driver.db_type) && !isDriverQueued(driver.db_type)"
                     size="sm"
                     variant="ghost"
                     class="h-7 w-7 rounded-full text-xs text-muted-foreground"

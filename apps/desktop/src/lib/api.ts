@@ -53,6 +53,7 @@ export const testConnection = forward("testConnection");
 export const connectDb = forward("connectDb");
 export const connectionFinalProxyPort = forward("connectionFinalProxyPort");
 export const disconnectDb = forward("disconnectDb");
+export const checkConnectionHealth = forward("checkConnectionHealth");
 export const closeDatabaseConnection = forward("closeDatabaseConnection");
 export const refreshConnections = forward("refreshConnections");
 export const saveConnections = forward("saveConnections");
@@ -65,6 +66,7 @@ export const listJdbcDrivers = forward("listJdbcDrivers");
 export const listJdbcMavenBundles = forward("listJdbcMavenBundles");
 export const importJdbcDrivers = forward("importJdbcDrivers");
 export const installJdbcDriverFromMaven = forward("installJdbcDriverFromMaven");
+export const installPrestoSqlJdbcDriver = forward("installPrestoSqlJdbcDriver");
 export const deleteJdbcDriver = forward("deleteJdbcDriver");
 export const deleteJdbcMavenBundle = forward("deleteJdbcMavenBundle");
 export const jdbcPluginStatus = forward("jdbcPluginStatus");
@@ -97,6 +99,7 @@ export const deleteSavedSqlFile = forward("deleteSavedSqlFile");
 export const savedSqlStorageDir = forward("savedSqlStorageDir");
 export const openSavedSqlStorageDir = forward("openSavedSqlStorageDir");
 export const revealPathInFileManager = forward("revealPathInFileManager");
+export const isSqliteDatabaseFile = forward("isSqliteDatabaseFile");
 export const backupSqliteDatabase = forward("backupSqliteDatabase");
 export const syncSavedSqlDirectory = forward("syncSavedSqlDirectory");
 
@@ -110,10 +113,13 @@ export const saveSchemaCache = forward("saveSchemaCache");
 export const loadSchemaCache = forward("loadSchemaCache");
 export const deleteSchemaCachePrefix = forward("deleteSchemaCachePrefix");
 export const listSchemas = forward("listSchemas");
+export const listSchemaInfos = forward("listSchemaInfos");
 export const listTables = forward("listTables");
+export const getTableComment = forward("getTableComment");
 export const listObjects = forward("listObjects");
 export const listObjectStatistics = forward("listObjectStatistics");
 export const listCompletionObjects = forward("listCompletionObjects");
+export const completionAssistantSearch = forward("completionAssistantSearch");
 export const getObjectSource = forward("getObjectSource");
 export const getColumns = forward("getColumns");
 export const listIndexes = forward("listIndexes");
@@ -222,6 +228,24 @@ export const pendingOpenSqlFiles = forward("pendingOpenSqlFiles");
 export const pendingOpenDbFiles = forward("pendingOpenDbFiles");
 export const pendingOpenConnectionLinks = forward("pendingOpenConnectionLinks");
 export const readExternalSqlFile = forward("readExternalSqlFile");
+export const writeExternalSqlFile = forward("writeExternalSqlFile");
+
+// Nacos
+export const nacosTestConnection = forward("nacosTestConnection");
+export const nacosListNamespaces = forward("nacosListNamespaces");
+export const nacosCreateNamespace = forward("nacosCreateNamespace");
+export const nacosUpdateNamespace = forward("nacosUpdateNamespace");
+export const nacosListConfigs = forward("nacosListConfigs");
+export const nacosGetConfig = forward("nacosGetConfig");
+export const nacosPublishConfig = forward("nacosPublishConfig");
+export const nacosDeleteConfig = forward("nacosDeleteConfig");
+export const nacosListConfigHistory = forward("nacosListConfigHistory");
+export const nacosGetConfigHistory = forward("nacosGetConfigHistory");
+export const nacosRollbackConfig = forward("nacosRollbackConfig");
+export const nacosListServices = forward("nacosListServices");
+export const nacosListInstances = forward("nacosListInstances");
+export const nacosUpdateInstance = forward("nacosUpdateInstance");
+export const nacosRawRequest = forward("nacosRawRequest");
 
 // Data Transfer
 export const startTransfer = forward("startTransfer");
@@ -244,6 +268,8 @@ export const exportQueryResultJson = forward("exportQueryResultJson");
 export const exportQueryResultMarkdown = forward("exportQueryResultMarkdown");
 export const startTableExport = forward("startTableExport");
 export const cancelTableExport = forward("cancelTableExport");
+export const startQueryResultExport = forward("startQueryResultExport");
+export const cancelQueryResultExport = forward("cancelQueryResultExport");
 
 // Redis
 export const redisListDatabases = forward("redisListDatabases");
@@ -271,6 +297,8 @@ export const redisFlushDb = forward("redisFlushDb");
 export const redisExecuteCommand = forward("redisExecuteCommand");
 export const redisLoadMore = forward("redisLoadMore");
 export const redisPubSubPublish = forward("redisPubSubPublish");
+export const redisSlowlogGet = forward("redisSlowlogGet");
+export const redisClusterMasterNodes = forward("redisClusterMasterNodes");
 
 export function redisPubSubConnect(connectionId: string): WebSocket {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -282,6 +310,12 @@ export const etcdListPrefix = forward("etcdListPrefix");
 export const etcdGet = forward("etcdGet");
 export const etcdPut = forward("etcdPut");
 export const etcdDelete = forward("etcdDelete");
+
+// ZooKeeper
+export const zookeeperListPrefix = forward("zookeeperListPrefix");
+export const zookeeperGet = forward("zookeeperGet");
+export const zookeeperPut = forward("zookeeperPut");
+export const zookeeperDelete = forward("zookeeperDelete");
 
 // Message Queue
 export const mqTestConnection = forward("mqTestConnection");
@@ -328,6 +362,9 @@ export const mqRawRequest = forward("mqRawRequest");
 // MongoDB
 export const mongoListDatabases = forward("mongoListDatabases");
 export const mongoListCollections = forward("mongoListCollections");
+export const mongoCreateDatabase = forward("mongoCreateDatabase");
+export const mongoDropDatabase = forward("mongoDropDatabase");
+export const mongoDropCollection = forward("mongoDropCollection");
 export const documentFindDocuments = forward("documentFindDocuments");
 export const mongoFindDocuments = forward("mongoFindDocuments");
 export const mongoAggregateDocuments = forward("mongoAggregateDocuments");
@@ -396,12 +433,17 @@ export type {
   RedisScanResult,
   RedisCommandSafety,
   RedisCommandResult,
+  RedisSlowlogEntry,
+  RedisNodeEndpoint,
   KvValueEncoding,
   KvValue,
   KvKeyMetadata,
   KvKeySummary,
   KvListPrefixResponse,
   KvGetResponse,
+  KvWriteMode,
+  KvCreateMode,
+  KvPutOptions,
   KvPutResponse,
   KvDeleteResponse,
   MongoDocumentResult,
@@ -426,5 +468,6 @@ export type {
   TableExportProgress,
   TableExportStatus,
   TableExportRequest,
+  QueryResultExportRequest,
   AgentEvent,
 } from "./tauri";
