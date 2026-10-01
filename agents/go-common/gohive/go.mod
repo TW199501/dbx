@@ -1,9 +1,9 @@
 module github.com/t8y2/dbx/agents/go-common/gohive
 
-go 1.23.0
+go 1.25
 
 require (
-	github.com/apache/thrift v0.22.0
+	github.com/apache/thrift v0.24.0
 	github.com/beltran/gohive/v2 v2.1.0
 	github.com/beltran/gosasl v1.0.0
 	github.com/pkg/errors v0.9.1
